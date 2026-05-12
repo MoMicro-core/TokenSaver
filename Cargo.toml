@@ -1,0 +1,40 @@
+[package]
+name = "tokensaver"
+version = "0.1.0"
+edition = "2021"
+description = "Claude Code hook that injects relevant context into every prompt"
+license = "MIT"
+
+[[bin]]
+name = "tokensaver"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# File system
+walkdir = "2"
+ignore = "0.4"
+regex = "1"
+
+# Local LLM (Ollama) — synchronous HTTP, no async runtime needed
+ureq = { version = "2", features = ["json"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging (stderr only)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"

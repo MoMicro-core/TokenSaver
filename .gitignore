@@ -1,10 +1,11 @@
 # Planning docs (not for repo)
 PRD.md
 skill.md
+CLAUDE.md
 
 # Rust build artifacts
 /target/
-Cargo.lock
+# Note: Cargo.lock is intentionally committed — this is a binary crate
 
 # TokenSaver runtime data
 .tokensaver/

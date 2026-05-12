@@ -1,8 +1,8 @@
 # TokenSaver
 
-A Claude Code hook that automatically injects relevant context into every prompt — relevant files, symbols, and persistent project memory — without changing your workflow.
+A Claude Code hook powered by a local LLM. Every prompt you send is automatically enriched with relevant files, a structured task plan, and persistent project memory — before Claude ever sees it.
 
-You type in Claude Code as normal. TokenSaver runs invisibly in the background, analyzes your repo, and enriches what Claude receives before it starts working.
+You keep using Claude Code exactly as before. TokenSaver runs invisibly in the background.
 
 ---
 
@@ -15,61 +15,84 @@ You type: "fix login redirect after session expiry"
           Claude Code fires UserPromptSubmit hook
                         │
                         ▼
-              tokensaver process (< 200ms)
-                        │
-              analyzes repo + loads memory
+          tokensaver process
+            │
+            ├── 1. Fast scan — finds candidate files in your repo
+            │
+            ├── 2. Loads project memory
+            │       memory.md    — architecture, conventions, constraints
+            │       changelog.md — history of recent changes
+            │       tasks.jsonl  — active and completed tasks
+            │
+            ├── 3. Local LLM (Qwen2.5-Coder via Ollama)
+            │       decides which files are truly relevant,
+            │       writes a clear task plan for Claude,
+            │       updates memory with new facts,
+            │       logs the task to changelog and tasks
+            │
+            └── 4. Injects structured context alongside your prompt
                         │
                         ▼
           Claude receives your original prompt +
-          automatically injected context:
+
+          Task:
+          Fix login redirect after an expired JWT session.
 
           Relevant Files:
           - src/auth/session.ts
           - src/middleware/auth.ts
-          - src/routes/login.tsx
 
           Relevant Symbols:
           - validateSession() [session.ts:34]
           - requireAuth() [auth.ts:12]
-          - redirectAfterLogin() [login.tsx:78]
 
-          Project Memory:
+          Reasoning:
+          The session module validates JWT expiry state.
+          The middleware controls redirect behavior on auth failure.
+
+          Constraints (from project memory):
           - Authentication uses JWT, not cookies
           - Do not modify database schema automatically
 
           Instructions:
-          Inspect only the listed files first.
-          Avoid unrelated refactors.
+          Work only with the listed files first.
+          Explain before editing any file not listed above.
 ```
 
-Your prompt reaches Claude unchanged. TokenSaver adds context alongside it via Claude Code's `additionalContext` injection. No separate terminal, no extra steps, no API keys.
+Your prompt reaches Claude unchanged. The context rides next to it, invisibly.
+
+---
+
+## Requirements
+
+- [Rust](https://rustup.rs) (to build from source)
+- [Ollama](https://ollama.com) running locally
 
 ---
 
 ## Installation
 
-> **Note:** TokenSaver is currently in development. Pre-built binaries are not yet available — build from source for now.
-
-### Build from source
-
 ```bash
+# 1. Install Ollama and pull the default model
+brew install ollama
+ollama serve                        # keep this running in background
+ollama pull qwen2.5-coder:0.5b     # ~400MB, fast, code-aware
+
+# 2. Build TokenSaver
 git clone https://github.com/axbuglak/tokensaver
 cd tokensaver
 cargo build --release
 cp target/release/tokensaver /usr/local/bin/tokensaver
-```
 
-### Verify
-
-```bash
-tokensaver --version
+# 3. Check everything is connected
+tokensaver llm-status
 ```
 
 ---
 
-## Setup
+## Setup (per project)
 
-Run this once in any repo you want TokenSaver to enhance:
+Run once in any repo you want to enhance:
 
 ```bash
 cd your-project
@@ -77,25 +100,25 @@ tokensaver init
 ```
 
 This creates:
-- `.tokensaver/` — config and memory directory
-- `.tokensaver/config.toml` — configuration with defaults
-- `.tokensaver/memory.md` — empty project memory file
-- Updates `.claude/settings.json` with the hook entry
+- `.tokensaver/config.toml` — configuration
+- `.tokensaver/memory.md` — persistent project facts
+- `.tokensaver/changelog.md` — history of tasks and changes
+- `.tokensaver/tasks.jsonl` — task log
+- `.claude/settings.json` — hooks Claude Code into TokenSaver automatically
 
-That's it. Open Claude Code in that directory and every prompt you send is now enriched automatically.
+Commit `.tokensaver/` to share memory across your team.
 
 ---
 
 ## Project Memory
 
-The most powerful feature. Teach TokenSaver things about your project once — it injects them into every future prompt.
+The local LLM automatically updates memory as you work. You can also manage it manually:
 
 ```bash
-# Add facts
+# Add facts the LLM should always know
 tokensaver remember "Backend uses FastAPI with JWT authentication"
 tokensaver remember "Do not modify database schema without a migration file"
 tokensaver remember "All API routes require the requireAuth() middleware"
-tokensaver remember "Frontend is Next.js 14 with App Router"
 
 # View all facts
 tokensaver memory
@@ -104,42 +127,35 @@ tokensaver memory
 tokensaver forget abc123
 ```
 
-Memory is stored in `.tokensaver/memory.md` — a plain Markdown file you can edit directly. Commit it to your repo so your whole team shares the same context.
-
 ---
 
-## Debugging
+## Changelog & Tasks
 
-See exactly what Claude is receiving before you rely on it:
+The LLM logs what it worked on after each prompt:
 
 ```bash
-# Show which files and symbols would be selected for a query
-tokensaver analyze "fix login redirect"
-
-# Show the full additionalContext block that would be injected
-tokensaver context "fix login redirect"
-
-# Simulate the full hook manually (same as Claude Code fires it)
-echo '{
-  "session_id": "test",
-  "cwd": "/path/to/your/project",
-  "permission_mode": "default",
-  "hook_event_name": "UserPromptSubmit",
-  "prompt": "fix login redirect"
-}' | tokensaver process
+tokensaver changelog          # show recent task history
+tokensaver tasks              # show active tasks
+tokensaver tasks --all        # show all tasks including completed
 ```
 
 ---
 
 ## Configuration
 
-`.tokensaver/config.toml` — all values are optional, these are the defaults:
+`.tokensaver/config.toml` — all values are optional:
 
 ```toml
+[llm]
+enabled = true
+model = "qwen2.5-coder:0.5b"   # any model installed in Ollama
+endpoint = "http://localhost:11434"
+timeout_secs = 30               # fallback to deterministic mode after this
+
 [prompt]
-max_tokens = 8000         # token budget for injected context
-include_snippets = true   # include short code excerpts
-snippet_lines = 20        # max lines per file snippet
+max_tokens = 8000
+include_snippets = true
+snippet_lines = 20
 
 [analyzer]
 max_files = 20
@@ -152,72 +168,65 @@ auto_inject = true
 max_facts = 100
 ```
 
+**Switching models:** install any model with `ollama pull <model>` then set it in `config.toml`. Good alternatives: `phi3.5`, `llama3.2`, `qwen2.5-coder:1.5b`.
+
 ---
 
-## How the Hook Is Configured
+## Debugging
 
-TokenSaver adds itself to `.claude/settings.json` during `tokensaver init`:
+```bash
+# Check Ollama and model status
+tokensaver llm-status
 
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tokensaver process"
-          }
-        ]
-      }
-    ]
-  }
-}
+# See which files the fast scanner would pick
+tokensaver analyze "fix login redirect"
+
+# See the full additionalContext that would be injected (runs the local LLM)
+tokensaver context "fix login redirect"
+
+# Simulate the full hook manually
+echo '{
+  "session_id": "test",
+  "cwd": "/path/to/your/project",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "fix login redirect"
+}' | tokensaver process
+
+# Enable debug logging
+TOKENSAVER_LOG=debug tokensaver context "fix login redirect"
 ```
 
-To disable TokenSaver for a project, remove this entry. Your Claude Code sessions are otherwise completely unchanged.
+---
+
+## Fallback Behavior
+
+If Ollama is not running or the model times out, TokenSaver automatically falls back to deterministic mode — keyword-based file selection, no LLM — and still injects useful context. Your Claude Code session is never blocked.
 
 ---
 
-## What Gets Analyzed
+## Memory Files
 
-TokenSaver uses fast, deterministic techniques — no LLM, no network:
-
-- **Keyword search** — matches query terms against file names, function names, and file contents
-- **AST parsing** — extracts functions, classes, types, and interfaces via tree-sitter
-- **Import tracing** — follows imports from candidate files one level deep
-- **Git recency** — recently modified files rank higher
-
-Supported languages: TypeScript, JavaScript, Python, Rust, Go.
-
----
-
-## What TokenSaver Is Not
-
-- Not a coding assistant — it does not generate code
-- Not a replacement for Claude Code — it makes Claude Code work better
-- Not a cloud service — everything runs locally, no telemetry, no accounts
-- Not an IDE plugin — it works at the Claude Code CLI level
+| File | Purpose | Commit? |
+|------|---------|---------|
+| `memory.md` | Architecture, conventions, constraints — permanent facts | Yes |
+| `changelog.md` | Append-only history of tasks and changes | Yes |
+| `tasks.jsonl` | Active and completed task log | Yes |
+| `config.toml` | Per-project configuration | Yes |
 
 ---
 
 ## Roadmap
 
 - [x] Claude Code hook integration (`UserPromptSubmit` → `additionalContext`)
-- [x] Persistent project memory (`.tokensaver/memory.md`)
-- [ ] Codebase analyzer (file scanner, keyword search)
-- [ ] AST symbol extraction (tree-sitter)
-- [ ] Import graph traversal
-- [ ] Token budget enforcement
+- [x] Persistent project memory (`memory.md`)
+- [x] Local LLM via Ollama (Qwen2.5-Coder-0.5B default)
+- [x] LLM-structured task plan injected into every prompt
+- [x] Automatic memory updates (remember / forget) after each prompt
+- [x] Changelog and task tracking (`changelog.md`, `tasks.jsonl`)
+- [x] Deterministic fallback when Ollama is unavailable
 - [ ] Pre-built binaries (macOS, Linux, Windows)
 - [ ] Homebrew formula
-
----
-
-## Contributing
-
-Issues and pull requests are welcome. See [PRD.md](PRD.md) — wait, that's gitignored. Check the issues tab for what's being worked on.
 
 ---
 
