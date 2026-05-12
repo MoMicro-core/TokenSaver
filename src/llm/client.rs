@@ -1,11 +1,14 @@
 use crate::config::LlmConfig;
-use crate::llm::response::LlmDecision;
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
 
-/// Calls Ollama's /api/chat endpoint synchronously.
-/// Returns an error if Ollama is unreachable or the response cannot be parsed —
-/// callers must treat this as a signal to fall back to deterministic mode.
-pub fn call(config: &LlmConfig, system: &str, user_message: &str) -> Result<LlmDecision> {
+/// Calls Ollama /api/chat and deserialises the response into T.
+/// Generic over T so it works for both ContextDecision and MemoryDecision.
+pub fn call<T: DeserializeOwned + Default>(
+    config: &LlmConfig,
+    system: &str,
+    user_message: &str,
+) -> Result<T> {
     let url = format!("{}/api/chat", config.endpoint.trim_end_matches('/'));
 
     let body = serde_json::json!({
@@ -15,34 +18,52 @@ pub fn call(config: &LlmConfig, system: &str, user_message: &str) -> Result<LlmD
             { "role": "user",   "content": user_message }
         ],
         "stream": false,
-        "format": "json"   // instructs Ollama to enforce JSON output
+        "format": "json",   // Ollama grammar-constrains JSON output at the sampler level
+        "options": {
+            "temperature": 0.1,   // near-deterministic — critical for structured extraction
+            "top_p":       0.9,
+            "num_predict": 512,   // cap response length, prevents runaway generation
+        }
     });
 
     let response = ureq::post(&url)
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .send_json(body)
-        .context("ollama unreachable — falling back to deterministic mode")?;
+        .context("ollama unreachable")?;
 
     let raw: serde_json::Value = response
         .into_json()
-        .context("failed to parse Ollama response body")?;
+        .context("failed to parse Ollama response")?;
 
     let content = raw["message"]["content"]
         .as_str()
-        .unwrap_or("")
+        .unwrap_or("{}")
         .trim()
         .to_string();
 
-    tracing::debug!(content = %content, "raw LLM response");
+    tracing::debug!(content = %content, "raw LLM output");
 
-    let decision: LlmDecision = serde_json::from_str(&content)
-        .context("LLM returned invalid JSON — falling back to deterministic mode")?;
+    // Primary parse attempt
+    if let Ok(parsed) = serde_json::from_str::<T>(&content) {
+        return Ok(parsed);
+    }
 
-    Ok(decision)
+    // Fallback: extract the first {...} block in case the model wrapped JSON in prose
+    if let Some(start) = content.find('{') {
+        if let Some(end) = content.rfind('}') {
+            if end > start {
+                if let Ok(parsed) = serde_json::from_str::<T>(&content[start..=end]) {
+                    tracing::debug!("JSON extracted from prose response");
+                    return Ok(parsed);
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("LLM response could not be parsed as JSON: {content}")
 }
 
-/// Checks whether the configured Ollama server is reachable and the model is available.
-/// Returns a human-readable status string suitable for `tokensaver llm-status`.
+/// Checks whether Ollama is reachable and the configured model is available.
 pub fn check_status(config: &LlmConfig) -> String {
     let url = format!("{}/api/tags", config.endpoint.trim_end_matches('/'));
 
@@ -54,10 +75,10 @@ pub fn check_status(config: &LlmConfig) -> String {
             "OFFLINE — cannot reach Ollama at {}\n  {e}",
             config.endpoint
         ),
-        Ok(response) => {
-            let body: serde_json::Value = match response.into_json() {
+        Ok(resp) => {
+            let body: serde_json::Value = match resp.into_json() {
                 Ok(v) => v,
-                Err(_) => return format!("ONLINE — {}, but could not parse model list", config.endpoint),
+                Err(_) => return format!("ONLINE — {} (could not parse model list)", config.endpoint),
             };
 
             let models: Vec<String> = body["models"]
@@ -67,15 +88,12 @@ pub fn check_status(config: &LlmConfig) -> String {
                 .filter_map(|m| m["name"].as_str().map(String::from))
                 .collect();
 
-            let model_available = models.iter().any(|m| {
+            let available = models.iter().any(|m| {
                 m == &config.model || m.starts_with(&format!("{}:", config.model))
             });
 
-            if model_available {
-                format!(
-                    "ONLINE — {} | model '{}' is ready",
-                    config.endpoint, config.model
-                )
+            if available {
+                format!("ONLINE — {} | model '{}' ready", config.endpoint, config.model)
             } else {
                 format!(
                     "ONLINE — {} | model '{}' not found\n  Available: {}\n  Run: ollama pull {}",

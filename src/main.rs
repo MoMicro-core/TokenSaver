@@ -65,6 +65,12 @@ enum Command {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
+
+    /// Show raw LLM input/output for a query — use this when the LLM is making weird decisions
+    Debug { query: String },
+
+    /// Run a fixed set of test prompts to check LLM quality
+    Benchmark,
 }
 
 fn main() {
@@ -87,6 +93,8 @@ fn main() {
         Command::Analyze { query }        => commands::analyze(&query),
         Command::Context { query }        => commands::show_context(&query),
         Command::Config { repo }          => commands::print_config(repo),
+        Command::Debug { query }          => commands::debug(&query),
+        Command::Benchmark                => commands::benchmark(),
     };
 
     if let Err(e) = result {
@@ -204,6 +212,109 @@ mod commands {
     pub fn print_config(repo: Option<PathBuf>) -> Result<()> {
         let cwd = repo.unwrap_or(std::env::current_dir()?);
         println!("{:#?}", crate::config::load(&cwd)?);
+        Ok(())
+    }
+
+    pub fn debug(query: &str) -> Result<()> {
+        let cwd        = std::env::current_dir()?;
+        let config     = crate::config::load(&cwd)?;
+        let facts      = crate::memory::store::load(&cwd)?;
+        let candidates = crate::analyzer::analyze(query, &cwd, &config)?;
+
+        println!("─────────────────────────────────────────────────────");
+        println!(" DEBUG: \"{}\"", query);
+        println!("─────────────────────────────────────────────────────\n");
+
+        // Stage 1: deterministic analyzer
+        println!("STAGE 1 — Deterministic analyzer");
+        println!("  Candidates found: {}", candidates.files.len());
+        for f in candidates.files.iter().take(10) {
+            println!("    [{:.1}] {}", f.relevance_score, f.path.display());
+        }
+
+        if !config.llm.enabled {
+            println!("\nSTAGE 2 — LLM disabled in config (using deterministic fallback).");
+            return Ok(());
+        }
+
+        let trace = crate::llm::decide_with_trace(query, &candidates, &facts, &config.llm);
+
+        println!("\nSTAGE 2 — LLM Call 1 (context selection)");
+        println!("  Request type detected: {}", trace.request_type);
+        println!("  Candidates passed in: {}", trace.candidates_in_prompt.len());
+        println!("\n  Raw LLM output:");
+        println!("    relevant_files: {:?}", trace.ctx_files_raw);
+        println!("    task_plan:      \"{}\"", trace.ctx_plan_raw);
+        println!("\n  After validation:");
+        println!("    kept:    {:?}", trace.validated_files);
+        let dropped: Vec<_> = trace.ctx_files_raw.iter()
+            .filter(|f| !trace.validated_files.contains(f)).collect();
+        if !dropped.is_empty() {
+            println!("    DROPPED (hallucinated): {:?}", dropped);
+        }
+
+        println!("\nSTAGE 3 — LLM Call 2 (memory extraction)");
+        println!("  Raw facts: {}", trace.raw_facts.len());
+        for f in &trace.raw_facts {
+            println!("    {} | {} | category={}", f.key, f.value, f.category);
+        }
+        println!("\n  After sanitize + cap to 2:");
+        for f in &trace.sanitized_facts {
+            println!("    ✓ {}", f.to_memory_string());
+        }
+        let filtered = trace.raw_facts.len().saturating_sub(trace.sanitized_facts.len());
+        if filtered > 0 {
+            println!("    ({} fact(s) filtered out)", filtered);
+        }
+        println!("\n  Changelog: \"{}\"", trace.changelog);
+
+        Ok(())
+    }
+
+    pub fn benchmark() -> Result<()> {
+        let cwd    = std::env::current_dir()?;
+        let config = crate::config::load(&cwd)?;
+
+        if !config.llm.enabled {
+            println!("LLM disabled in config — nothing to benchmark.");
+            return Ok(());
+        }
+
+        // Status check first
+        println!("LLM status: {}\n", crate::llm::check_status(&config.llm));
+
+        let prompts = [
+            "fix the divide by zero bug",
+            "combine these python files into one",
+            "add a new health check endpoint",
+            "refactor the auth middleware",
+            "what does this function do",
+        ];
+
+        let facts      = crate::memory::store::load(&cwd)?;
+
+        for (i, p) in prompts.iter().enumerate() {
+            println!("─── Test {} / {}: {:?}", i + 1, prompts.len(), p);
+            let candidates = crate::analyzer::analyze(p, &cwd, &config)?;
+            let start      = std::time::Instant::now();
+            let decision   = crate::llm::decide(p, &candidates, &facts, &config.llm);
+            let ms         = start.elapsed().as_millis();
+
+            match decision {
+                None => println!("  ✗ LLM call failed or returned no usable output"),
+                Some(d) => {
+                    println!("  ✓ {} ms", ms);
+                    println!("    plan:  {}", d.task_plan);
+                    println!("    files: {:?}", d.relevant_files);
+                    if !d.new_facts.is_empty() {
+                        let strs: Vec<String> = d.new_facts.iter().map(|f| f.to_memory_string()).collect();
+                        println!("    facts: {:?}", strs);
+                    }
+                }
+            }
+            println!();
+        }
+
         Ok(())
     }
 }

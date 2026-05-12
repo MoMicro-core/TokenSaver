@@ -68,10 +68,6 @@ fn build_from_llm_decision(
         sections.push(format!("Relevant Symbols:\n{sym_lines}"));
     }
 
-    if !decision.reasoning.is_empty() {
-        sections.push(format!("Reasoning:\n{}", decision.reasoning));
-    }
-
     if !facts.is_empty() {
         let constraints = crate::memory::inject::format(facts);
         sections.push(format!("Constraints (from project memory):\n{constraints}"));

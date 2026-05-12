@@ -6,6 +6,9 @@ pub use input::HookInput;
 use anyhow::Result;
 
 pub fn run() -> Result<()> {
+    // Silence the memory store's interactive println — stdout is reserved for hook JSON
+    std::env::set_var("TOKENSAVER_SILENT", "1");
+
     let input = match input::read() {
         Ok(i) => i,
         Err(e) => {
@@ -18,7 +21,7 @@ pub fn run() -> Result<()> {
     tracing::debug!(prompt = %input.prompt, cwd = %input.cwd.display(), "hook fired");
 
     match process(&input) {
-        Ok(additional_context) => print!("{}", output::build(&additional_context)),
+        Ok(ctx) => print!("{}", output::build(&ctx)),
         Err(e) => {
             tracing::warn!("hook processing failed, emitting empty context: {e:#}");
             print!("{}", output::empty());
@@ -29,50 +32,71 @@ pub fn run() -> Result<()> {
 }
 
 fn process(input: &HookInput) -> Result<String> {
-    let config = crate::config::load(&input.cwd)?;
-    let facts   = crate::memory::store::load(&input.cwd)?;
-
-    // Step 1 — fast deterministic scan: candidate files + symbols
+    let config     = crate::config::load(&input.cwd)?;
+    let facts      = crate::memory::store::load(&input.cwd)?;
     let candidates = crate::analyzer::analyze(&input.prompt, &input.cwd, &config)?;
+    let decision   = crate::llm::decide(&input.prompt, &candidates, &facts, &config.llm);
 
-    // Step 2 — local LLM decides what's truly relevant and structures the task
-    let decision = crate::llm::decide(&input.prompt, &candidates, &facts, &config.llm);
-
-    // Step 3 — persist LLM memory decisions (best-effort, never blocks the hook)
     if let Some(ref d) = decision {
         persist_memory_updates(d, &input.cwd);
     }
 
-    // Step 4 — build additionalContext from LLM decision (or fall back to deterministic)
-    let additional_context = crate::context::build(&candidates, &decision, &facts, &config);
-
-    Ok(additional_context)
+    Ok(crate::context::build(&candidates, &decision, &facts, &config))
 }
 
-/// Applies memory updates from the LLM decision.
-/// All operations are best-effort — a failure here never blocks the hook.
+/// Persists only what's substantive. Memory writes are best-effort —
+/// any failure is logged but never blocks the hook.
 fn persist_memory_updates(decision: &crate::llm::LlmDecision, repo_root: &std::path::Path) {
-    for fact in &decision.remember {
-        if let Err(e) = crate::memory::store::append(repo_root, fact) {
-            tracing::warn!("failed to remember fact: {e:#}");
+
+    // ── Facts: dedup by key via upsert (never duplicates, never deletes) ──────
+    for fact in &decision.new_facts {
+        if let Err(e) = crate::memory::store::upsert_by_key(
+            repo_root, &fact.key, &fact.value, &fact.category,
+        ) {
+            tracing::warn!("failed to upsert fact '{}': {e:#}", fact.key);
         }
     }
 
-    for id in &decision.forget_ids {
-        if let Err(e) = crate::memory::store::remove(repo_root, id) {
-            tracing::warn!("failed to forget memory id '{id}': {e:#}");
-        }
-    }
-
-    if !decision.changelog_entry.is_empty() {
-        if let Err(e) = crate::memory::changelog::append(repo_root, &decision.changelog_entry) {
+    // ── Changelog: only write if the LLM produced something substantive ───────
+    if is_substantive_changelog(&decision.changelog) {
+        if let Err(e) = crate::memory::changelog::append(repo_root, &decision.changelog) {
             tracing::warn!("failed to append changelog: {e:#}");
         }
+    } else {
+        tracing::debug!("skipping non-substantive changelog: {:?}", decision.changelog);
     }
 
-    if !decision.task_plan.is_empty() {
-        if let Err(e) = crate::memory::tasks::add(repo_root, &decision.task_plan, "") {
-            tracing::warn!("failed to add task: {e:#}");
-        }
+    // NOTE: tasks.jsonl is no longer written automatically on every prompt.
+    // Use `tokensaver remember` or update tasks manually through CLI.
+}
+
+/// Filters out short, generic, or echoing changelog entries that would pollute the file.
+fn is_substantive_changelog(text: &str) -> bool {
+    let t = text.trim();
+    if t.len() < 15                 { return false; }   // too short
+    if t.len() > 200                { return false; }   // suspicious — likely a paragraph
+    let lower = t.to_lowercase();
+    if lower.starts_with("the user") || lower.starts_with("user ")    { return false; }
+    if lower.starts_with("no ")      || lower.contains("nothing")     { return false; }
+    if lower == "n/a" || lower == "none" || lower == "skip"           { return false; }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn substantive_changelog_accepts_normal_entry() {
+        assert!(is_substantive_changelog("Fixed JWT session expiry redirect in auth middleware."));
+    }
+
+    #[test]
+    fn substantive_changelog_rejects_garbage() {
+        assert!(!is_substantive_changelog(""));
+        assert!(!is_substantive_changelog("ok"));
+        assert!(!is_substantive_changelog("n/a"));
+        assert!(!is_substantive_changelog("The user asked about fixing things"));
+        assert!(!is_substantive_changelog("nothing to do"));
     }
 }

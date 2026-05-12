@@ -73,18 +73,23 @@ Your prompt reaches Claude unchanged. The context rides next to it, invisibly.
 ## Installation
 
 ```bash
-# 1. Install Ollama and pull the default model
+# 1. Install Ollama
 brew install ollama
 ollama serve                        # keep this running in background
-ollama pull qwen2.5-coder:0.5b     # ~400MB, fast, code-aware
 
-# 2. Build TokenSaver
-git clone https://github.com/axbuglak/tokensaver
-cd tokensaver
-cargo build --release
-cp target/release/tokensaver /usr/local/bin/tokensaver
+# 2. Pull ONE of the two recommended models — pick based on your RAM:
+#
+#    qwen2.5-coder:0.5b  ~400 MB on disk, ~1 GB RAM   — fast, good for ≤8 GB machines
+#    qwen2.5-coder:1.5b  ~1 GB   on disk, ~2 GB RAM   — noticeably better decisions, recommended for 16 GB+
+#
+ollama pull qwen2.5-coder:0.5b      # default — change in config.toml if you pulled 1.5b instead
 
-# 3. Check everything is connected
+# 3. Build TokenSaver
+git clone https://github.com/MoMicro-core/TokenSaver
+cd TokenSaver
+cargo install --path .
+
+# 4. Check everything is connected
 tokensaver llm-status
 ```
 
@@ -181,8 +186,14 @@ tokensaver llm-status
 # See which files the fast scanner would pick
 tokensaver analyze "fix login redirect"
 
-# See the full additionalContext that would be injected (runs the local LLM)
+# See the full additionalContext that would be injected
 tokensaver context "fix login redirect"
+
+# Show raw LLM output + what was filtered (essential when the LLM does something weird)
+tokensaver debug "fix login redirect"
+
+# Run a fixed set of test prompts to gauge LLM quality
+tokensaver benchmark
 
 # Simulate the full hook manually
 echo '{
@@ -193,9 +204,17 @@ echo '{
   "prompt": "fix login redirect"
 }' | tokensaver process
 
-# Enable debug logging
+# Enable debug / trace logging (TOKENSAVER_LOG goes to stderr only — never breaks the hook)
 TOKENSAVER_LOG=debug tokensaver context "fix login redirect"
+TOKENSAVER_LOG=trace tokensaver debug   "fix login redirect"
 ```
+
+### When the LLM gives strange results
+
+Run `tokensaver debug "<your query>"`. It shows the raw output of both LLM calls,
+which files were dropped because they were hallucinated, and which facts were
+filtered out by sanitisation. If outputs are consistently poor on `0.5b` and you
+have the RAM, switch to `1.5b` per the install step above.
 
 ---
 

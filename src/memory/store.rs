@@ -20,14 +20,28 @@ pub fn load(repo_root: &Path) -> Result<Vec<Fact>> {
     Ok(parse(&content))
 }
 
+/// Appends a fact with category `general` — used by `tokensaver remember` CLI command.
 pub fn append(repo_root: &Path, text: &str) -> Result<()> {
+    append_with_category(repo_root, text, "general")
+}
+
+/// Appends a fact with an explicit category — used by the LLM memory writer.
+pub fn append_with_category(repo_root: &Path, text: &str, category: &str) -> Result<()> {
     let dir = repo_root.join(".tokensaver");
     if !dir.exists() {
         anyhow::bail!("tokensaver not initialized — run `tokensaver init` first");
     }
+
+    // Sanitise category to the allowed set
+    let category = match category {
+        "stack" | "conventions" | "constraints" | "decisions" | "bugs" => category,
+        _ => "general",
+    };
+
     let path = repo_root.join(MEMORY_FILE);
-    let id = new_id();
-    let entry = format!("\n<!-- id: {id} category: general -->\n{text}\n");
+    let id   = new_id();
+    let entry = format!("\n<!-- id: {id} category: {category} -->\n{text}\n");
+
     let mut content = if path.exists() {
         std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?
@@ -37,7 +51,52 @@ pub fn append(repo_root: &Path, text: &str) -> Result<()> {
     content.push_str(&entry);
     std::fs::write(&path, &content)
         .with_context(|| format!("failed to write {}", path.display()))?;
-    println!("remembered [{id}]: {text}");
+
+    // Only print when called interactively (CLI), not from hook
+    if std::env::var("TOKENSAVER_SILENT").is_err() {
+        println!("remembered [{id}] ({category}): {text}");
+    }
+    Ok(())
+}
+
+/// Upserts a `key: value` fact. If an existing fact has the same key, its value
+/// is replaced. Otherwise, a new fact is appended. This is the LLM's only memory
+/// write path — `forget_ids` was removed because letting a 0.5B model delete
+/// memory was too risky. Deduplication by key is mechanical and never loses data.
+pub fn upsert_by_key(repo_root: &Path, key: &str, value: &str, category: &str) -> Result<()> {
+    let new_text   = format!("{}: {}", key.trim(), value.trim());
+    let key_prefix = format!("{}:", key.trim());
+
+    let existing = load(repo_root)?;
+    let match_id = existing.iter()
+        .find(|f| f.text.starts_with(&key_prefix))
+        .map(|f| f.id.clone());
+
+    if let Some(id) = match_id {
+        // Existing fact found — read existing text, decide whether to update
+        if existing.iter().any(|f| f.id == id && f.text == new_text) {
+            tracing::debug!("skipping unchanged memory fact: {new_text}");
+            return Ok(());
+        }
+        // Remove old, then append new — atomic-ish, both go through file write
+        let _ = remove_silent(repo_root, &id);
+        tracing::debug!("updating memory fact: {key} → {value}");
+    }
+
+    append_with_category(repo_root, &new_text, category)
+}
+
+/// Like `remove` but never prints and returns Ok if the id doesn't exist.
+fn remove_silent(repo_root: &Path, id: &str) -> Result<()> {
+    let path = repo_root.join(MEMORY_FILE);
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let updated = remove_entry(&content, id);
+    std::fs::write(&path, &updated)
+        .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
