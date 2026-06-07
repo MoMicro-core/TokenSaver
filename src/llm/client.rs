@@ -43,24 +43,29 @@ pub fn call<T: DeserializeOwned + Default>(
 
     tracing::debug!(content = %content, "raw LLM output");
 
-    // Primary parse attempt
-    if let Ok(parsed) = serde_json::from_str::<T>(&content) {
+    parse_llm_response(&content)
+}
+
+/// Tries to deserialise `content` as T. Falls back to extracting the first `{…}` block
+/// from the string in case the model wrapped its JSON answer in prose.
+fn parse_llm_response<T: DeserializeOwned>(content: &str) -> Result<T> {
+    if let Ok(parsed) = serde_json::from_str::<T>(content) {
         return Ok(parsed);
     }
-
-    // Fallback: extract the first {...} block in case the model wrapped JSON in prose
-    if let Some(start) = content.find('{') {
-        if let Some(end) = content.rfind('}') {
-            if end > start {
-                if let Ok(parsed) = serde_json::from_str::<T>(&content[start..=end]) {
-                    tracing::debug!("JSON extracted from prose response");
-                    return Ok(parsed);
-                }
-            }
+    if let Some(json_block) = extract_json_block(content) {
+        if let Ok(parsed) = serde_json::from_str::<T>(json_block) {
+            tracing::debug!("JSON extracted from prose response");
+            return Ok(parsed);
         }
     }
-
     anyhow::bail!("LLM response could not be parsed as JSON: {content}")
+}
+
+/// Finds the outermost `{…}` substring, or `None` if the content contains no braces.
+fn extract_json_block(content: &str) -> Option<&str> {
+    let start = content.find('{')?;
+    let end   = content.rfind('}')?;
+    if end > start { Some(&content[start..=end]) } else { None }
 }
 
 /// Checks whether Ollama is reachable and the configured model is available.
@@ -77,7 +82,7 @@ pub fn check_status(config: &LlmConfig) -> String {
         ),
         Ok(resp) => {
             let body: serde_json::Value = match resp.into_json() {
-                Ok(v) => v,
+                Ok(v)  => v,
                 Err(_) => return format!("ONLINE — {} (could not parse model list)", config.endpoint),
             };
 
@@ -88,11 +93,11 @@ pub fn check_status(config: &LlmConfig) -> String {
                 .filter_map(|m| m["name"].as_str().map(String::from))
                 .collect();
 
-            let available = models.iter().any(|m| {
+            let model_ready = models.iter().any(|m| {
                 m == &config.model || m.starts_with(&format!("{}:", config.model))
             });
 
-            if available {
+            if model_ready {
                 format!("ONLINE — {} | model '{}' ready", config.endpoint, config.model)
             } else {
                 format!(

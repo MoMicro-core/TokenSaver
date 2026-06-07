@@ -36,7 +36,10 @@ pub fn recent(repo_root: &Path, limit: usize) -> Result<String> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
 
+    // The file starts with "## ...", so the first chunk from split already carries
+    // the prefix. Strip it so every chunk is in the same "TIMESTAMP\n..." shape.
     let entries: Vec<&str> = content
+        .trim_start_matches("## ")
         .split("\n## ")
         .filter(|s| !s.trim().is_empty())
         .take(limit)
@@ -53,7 +56,7 @@ pub fn recent(repo_root: &Path, limit: usize) -> Result<String> {
         .join("\n\n"))
 }
 
-fn current_timestamp() -> String {
+pub(crate) fn current_timestamp() -> String {
     // std-only timestamp — avoids pulling in chrono
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

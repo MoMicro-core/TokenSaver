@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Write as _;
 use std::path::Path;
 
 const TASKS_FILE: &str = ".tokensaver/tasks.jsonl";
@@ -22,27 +23,26 @@ pub struct Task {
 
 /// Appends a new active task entry.
 pub fn add(repo_root: &Path, description: &str, prompt: &str) -> Result<String> {
-    let id = new_id();
+    let id = super::new_id();
     let task = Task {
         id: id.clone(),
         status: TaskStatus::Active,
         description: description.to_string(),
         prompt: prompt.to_string(),
-        timestamp: current_timestamp(),
+        timestamp: super::changelog::current_timestamp(),
     };
     append_line(repo_root, &task)?;
     Ok(id)
 }
 
-/// Marks a task as completed by appending a new entry with the same id and Completed status.
+/// Marks a task as completed by appending an updated entry (last write per id wins on load).
 pub fn complete(repo_root: &Path, id: &str) -> Result<()> {
-    let mut tasks = load_all(repo_root)?;
+    let tasks = load_all(repo_root)?;
     let task = tasks
-        .iter_mut()
+        .iter()
         .find(|t| t.id == id)
         .ok_or_else(|| anyhow::anyhow!("task '{id}' not found"))?;
-    task.status = TaskStatus::Completed;
-    let completed = task.clone();
+    let completed = Task { status: TaskStatus::Completed, ..task.clone() };
     append_line(repo_root, &completed)
 }
 
@@ -56,19 +56,17 @@ pub fn load_all(repo_root: &Path) -> Result<Vec<Task>> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
 
-    // Use a LinkedHashMap-style approach: last write wins per id
-    let mut seen: std::collections::HashMap<String, Task> = std::collections::HashMap::new();
+    // Append-log pattern: last write per id wins.
+    let mut by_id: std::collections::HashMap<String, Task> = std::collections::HashMap::new();
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
+        if line.is_empty() { continue; }
         if let Ok(task) = serde_json::from_str::<Task>(line) {
-            seen.insert(task.id.clone(), task);
+            by_id.insert(task.id.clone(), task);
         }
     }
 
-    let mut tasks: Vec<Task> = seen.into_values().collect();
+    let mut tasks: Vec<Task> = by_id.into_values().collect();
     tasks.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
     Ok(tasks)
 }
@@ -84,39 +82,13 @@ fn append_line(repo_root: &Path, task: &Task) -> Result<()> {
     let path = repo_root.join(TASKS_FILE);
     let line = serde_json::to_string(task).context("failed to serialize task")?;
 
-    let mut content = if path.exists() {
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?
-    } else {
-        String::new()
-    };
-
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
-    content.push_str(&line);
-    content.push('\n');
-
-    std::fs::write(&path, content)
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{line}")
         .with_context(|| format!("failed to write {}", path.display()))
-}
-
-fn new_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    format!("{:06x}", nanos & 0xFFFFFF)
-}
-
-fn current_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // ISO 8601 UTC — reuse the same logic as changelog
-    format!("{secs}")
 }
 
 #[cfg(test)]

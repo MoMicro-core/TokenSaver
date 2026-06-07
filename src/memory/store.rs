@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
+use std::io::Write as _;
 use std::path::Path;
 
 const MEMORY_FILE: &str = ".tokensaver/memory.md";
+
+const VALID_CATEGORIES: &[&str] = &["stack", "conventions", "constraints", "decisions", "bugs"];
 
 #[derive(Debug, Clone)]
 pub struct Fact {
@@ -32,53 +35,45 @@ pub fn append_with_category(repo_root: &Path, text: &str, category: &str) -> Res
         anyhow::bail!("tokensaver not initialized — run `tokensaver init` first");
     }
 
-    // Sanitise category to the allowed set
-    let category = match category {
-        "stack" | "conventions" | "constraints" | "decisions" | "bugs" => category,
-        _ => "general",
-    };
-
-    let path = repo_root.join(MEMORY_FILE);
-    let id   = new_id();
+    let category = if VALID_CATEGORIES.contains(&category) { category } else { "general" };
+    let id = super::new_id();
     let entry = format!("\n<!-- id: {id} category: {category} -->\n{text}\n");
 
-    let mut content = if path.exists() {
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?
-    } else {
-        String::new()
-    };
-    content.push_str(&entry);
-    std::fs::write(&path, &content)
+    let path = repo_root.join(MEMORY_FILE);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    write!(file, "{entry}")
         .with_context(|| format!("failed to write {}", path.display()))?;
 
-    // Only print when called interactively (CLI), not from hook
     if std::env::var("TOKENSAVER_SILENT").is_err() {
         println!("remembered [{id}] ({category}): {text}");
     }
     Ok(())
 }
 
-/// Upserts a `key: value` fact. If an existing fact has the same key, its value
-/// is replaced. Otherwise, a new fact is appended. This is the LLM's only memory
-/// write path — `forget_ids` was removed because letting a 0.5B model delete
-/// memory was too risky. Deduplication by key is mechanical and never loses data.
+/// Upserts a `key: value` fact. If an existing fact shares the same key, its
+/// value is replaced in-place. Otherwise a new fact is appended.
+///
+/// This is the LLM's only memory-write path. Deduplication is mechanical and
+/// never deletes facts — it only updates existing ones, keeping memory safe even
+/// when the model makes mistakes.
 pub fn upsert_by_key(repo_root: &Path, key: &str, value: &str, category: &str) -> Result<()> {
     let new_text   = format!("{}: {}", key.trim(), value.trim());
     let key_prefix = format!("{}:", key.trim());
 
-    let existing = load(repo_root)?;
-    let match_id = existing.iter()
+    let existing  = load(repo_root)?;
+    let match_id  = existing.iter()
         .find(|f| f.text.starts_with(&key_prefix))
         .map(|f| f.id.clone());
 
     if let Some(id) = match_id {
-        // Existing fact found — read existing text, decide whether to update
         if existing.iter().any(|f| f.id == id && f.text == new_text) {
             tracing::debug!("skipping unchanged memory fact: {new_text}");
             return Ok(());
         }
-        // Remove old, then append new — atomic-ish, both go through file write
         let _ = remove_silent(repo_root, &id);
         tracing::debug!("updating memory fact: {key} → {value}");
     }
@@ -86,7 +81,7 @@ pub fn upsert_by_key(repo_root: &Path, key: &str, value: &str, category: &str) -
     append_with_category(repo_root, &new_text, category)
 }
 
-/// Like `remove` but never prints and returns Ok if the id doesn't exist.
+/// Like `remove` but never prints and treats a missing id as a no-op.
 fn remove_silent(repo_root: &Path, id: &str) -> Result<()> {
     let path = repo_root.join(MEMORY_FILE);
     if !path.exists() {
@@ -94,10 +89,8 @@ fn remove_silent(repo_root: &Path, id: &str) -> Result<()> {
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let updated = remove_entry(&content, id);
-    std::fs::write(&path, &updated)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+    std::fs::write(&path, remove_entry(&content, id))
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub fn remove(repo_root: &Path, id: &str) -> Result<()> {
@@ -107,12 +100,10 @@ pub fn remove(repo_root: &Path, id: &str) -> Result<()> {
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let facts = parse(&content);
-    if !facts.iter().any(|f| f.id == id) {
+    if !parse(&content).iter().any(|f| f.id == id) {
         anyhow::bail!("no memory entry with id '{id}'");
     }
-    let updated = remove_entry(&content, id);
-    std::fs::write(&path, &updated)
+    std::fs::write(&path, remove_entry(&content, id))
         .with_context(|| format!("failed to write {}", path.display()))?;
     println!("forgot [{id}]");
     Ok(())
@@ -120,27 +111,29 @@ pub fn remove(repo_root: &Path, id: &str) -> Result<()> {
 
 fn parse(content: &str) -> Vec<Fact> {
     let mut facts = Vec::new();
-    let mut current_id = None;
-    let mut current_category = None;
+    let mut current_id: Option<String> = None;
+    let mut current_category: Option<String> = None;
     let mut current_lines: Vec<&str> = Vec::new();
+
+    let flush = |id: Option<String>, category: Option<String>, lines: &[&str], facts: &mut Vec<Fact>| {
+        if let (Some(id), Some(category)) = (id, category) {
+            let text = lines.join("\n").trim().to_string();
+            if !text.is_empty() {
+                facts.push(Fact { id, category, text });
+            }
+        }
+    };
 
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("<!-- id:") {
-            // Flush previous entry
-            if let (Some(id), Some(category)) = (current_id.take(), current_category.take()) {
-                let text = current_lines.join("\n").trim().to_string();
-                if !text.is_empty() {
-                    facts.push(Fact { id, category, text });
-                }
-            }
+            flush(current_id.take(), current_category.take(), &current_lines, &mut facts);
             current_lines.clear();
 
-            // Parse: <!-- id: abc123 category: constraints -->
-            if let Some(rest) = rest.strip_suffix("-->") {
-                let parts: Vec<&str> = rest.split_whitespace().collect();
-                // Expected: ["abc123", "category:", "constraints"]
+            // Format: <!-- id: abc123 category: constraints -->
+            if let Some(inner) = rest.strip_suffix("-->") {
+                let parts: Vec<&str> = inner.split_whitespace().collect();
                 if parts.len() >= 3 {
-                    current_id = Some(parts[0].to_string());
+                    current_id       = Some(parts[0].to_string());
                     current_category = Some(parts[2].to_string());
                 }
             }
@@ -149,46 +142,31 @@ fn parse(content: &str) -> Vec<Fact> {
         }
     }
 
-    // Flush final entry
-    if let (Some(id), Some(category)) = (current_id, current_category) {
-        let text = current_lines.join("\n").trim().to_string();
-        if !text.is_empty() {
-            facts.push(Fact { id, category, text });
-        }
-    }
-
+    flush(current_id, current_category, &current_lines, &mut facts);
     facts
 }
 
+/// Removes all lines belonging to the entry with `id`, leaving everything else intact.
 fn remove_entry(content: &str, id: &str) -> String {
     let marker = format!("<!-- id: {id} ");
     let mut result = String::new();
-    let mut skip = false;
+    let mut in_removed_entry = false;
 
     for line in content.lines() {
         if line.starts_with(&marker) {
-            skip = true;
+            in_removed_entry = true;
             continue;
         }
-        if skip && line.starts_with("<!-- id:") {
-            skip = false;
+        if in_removed_entry && line.starts_with("<!-- id:") {
+            in_removed_entry = false;
         }
-        if !skip {
+        if !in_removed_entry {
             result.push_str(line);
             result.push('\n');
         }
     }
 
     result
-}
-
-fn new_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    format!("{:06x}", nanos & 0xFFFFFF)
 }
 
 #[cfg(test)]

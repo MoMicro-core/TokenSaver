@@ -1,4 +1,5 @@
 use crate::config::Config;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const MAX_FILE_BYTES: u64 = 1_000_000; // skip files over 1MB for content scanning
@@ -22,14 +23,12 @@ pub fn walk(repo_root: &Path, config: &Config) -> Vec<ScannedFile> {
             let abs = entry.into_path();
             let rel = abs.strip_prefix(repo_root).ok()?.to_path_buf();
 
-            // Skip excluded directory segments
             if rel.components().any(|c| {
                 exclude.contains(&c.as_os_str().to_string_lossy().as_ref())
             }) {
                 return None;
             }
 
-            // Only keep supported extensions
             let ext = abs.extension()?.to_string_lossy().to_lowercase();
             if !extensions.contains(ext.as_str()) {
                 return None;
@@ -41,19 +40,20 @@ pub fn walk(repo_root: &Path, config: &Config) -> Vec<ScannedFile> {
         .collect()
 }
 
-fn language_extensions(languages: &[String]) -> std::collections::HashSet<String> {
-    let mut exts = std::collections::HashSet::new();
+fn language_extensions(languages: &[String]) -> HashSet<&'static str> {
+    let mut exts = HashSet::new();
     for lang in languages {
-        match lang.as_str() {
-            "typescript" => { exts.insert("ts"); exts.insert("tsx"); }
-            "javascript" => { exts.insert("js"); exts.insert("jsx"); exts.insert("mjs"); exts.insert("cjs"); }
-            "python"     => { exts.insert("py"); }
-            "rust"       => { exts.insert("rs"); }
-            "go"         => { exts.insert("go"); }
-            _ => {}
-        }
+        let lang_exts: &[&str] = match lang.as_str() {
+            "typescript" => &["ts", "tsx"],
+            "javascript" => &["js", "jsx", "mjs", "cjs"],
+            "python"     => &["py"],
+            "rust"       => &["rs"],
+            "go"         => &["go"],
+            _            => &[],
+        };
+        exts.extend(lang_exts.iter().copied());
     }
-    exts.into_iter().map(String::from).collect()
+    exts
 }
 
 pub fn is_readable_for_content(file: &ScannedFile) -> bool {

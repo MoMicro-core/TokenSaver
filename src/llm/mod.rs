@@ -40,23 +40,14 @@ pub fn decide(
         return None;
     }
 
-    // Validate returned files — drop any path the model hallucinated
     let valid_files = validate_files(ctx.relevant_files, candidates);
-
     tracing::debug!(files = ?valid_files, plan = %ctx.task_plan, "context decision");
 
     // ── Call 2: memory extraction (best-effort) ───────────────────────────────
     let mem = call_memory(user_prompt, &ctx.task_plan, facts, config)
         .unwrap_or_default();
 
-    // Sanitize, validate, cap to MAX_FACTS_PER_CALL
-    let new_facts: Vec<MemoryFact> = mem.facts
-        .into_iter()
-        .map(|mut f| { f.sanitize(); f })
-        .filter(|f| f.is_valid())
-        .take(MAX_FACTS_PER_CALL)
-        .collect();
-
+    let new_facts = sanitize_facts(mem.facts);
     tracing::debug!(
         facts = ?new_facts.iter().map(|f| f.to_memory_string()).collect::<Vec<_>>(),
         "memory decision (sanitized + capped)"
@@ -81,30 +72,25 @@ pub fn decide_with_trace(
     let request_type = prompt::detect_request_type(user_prompt);
     let ctx_msg      = prompt::build_context_message(user_prompt, candidates);
 
-    let ctx = call_context(user_prompt, candidates, config);
-    let ctx_files_raw: Vec<String> = ctx.as_ref().map(|c| c.relevant_files.clone()).unwrap_or_default();
-    let ctx_plan_raw  = ctx.as_ref().map(|c| c.task_plan.clone()).unwrap_or_default();
-
+    let ctx            = call_context(user_prompt, candidates, config);
+    let ctx_files_raw  = ctx.as_ref().map(|c| c.relevant_files.clone()).unwrap_or_default();
+    let ctx_plan_raw   = ctx.as_ref().map(|c| c.task_plan.clone()).unwrap_or_default();
     let validated_files = validate_files(ctx_files_raw.clone(), candidates);
 
-    let mem_msg = if !ctx_plan_raw.is_empty() {
-        prompt::build_memory_message(user_prompt, &ctx_plan_raw, facts)
-    } else {
+    let mem_msg = if ctx_plan_raw.is_empty() {
         String::new()
+    } else {
+        prompt::build_memory_message(user_prompt, &ctx_plan_raw, facts)
     };
 
-    let mem = if !ctx_plan_raw.is_empty() {
-        call_memory(user_prompt, &ctx_plan_raw, facts, config)
-    } else {
+    let mem = if ctx_plan_raw.is_empty() {
         None
+    } else {
+        call_memory(user_prompt, &ctx_plan_raw, facts, config)
     };
 
     let raw_facts: Vec<MemoryFact> = mem.as_ref().map(|m| m.facts.clone()).unwrap_or_default();
-    let sanitized: Vec<MemoryFact> = raw_facts.clone().into_iter()
-        .map(|mut f| { f.sanitize(); f })
-        .filter(|f| f.is_valid())
-        .take(MAX_FACTS_PER_CALL)
-        .collect();
+    let sanitized_facts = sanitize_facts(raw_facts.clone());
 
     DebugTrace {
         request_type: request_type.to_string(),
@@ -114,10 +100,10 @@ pub fn decide_with_trace(
         ctx_files_raw,
         ctx_plan_raw,
         validated_files,
-        dropped_files: vec![], // populated below
+        dropped_files: vec![],
         mem_message: mem_msg,
         raw_facts,
-        sanitized_facts: sanitized,
+        sanitized_facts,
         changelog: mem.as_ref().map(|m| m.changelog.clone()).unwrap_or_default(),
     }
 }
@@ -136,7 +122,16 @@ pub struct DebugTrace {
     pub changelog: String,
 }
 
-// ── Internal call helpers ─────────────────────────────────────────────────────
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Sanitises, validates, and caps raw facts from the LLM to MAX_FACTS_PER_CALL.
+fn sanitize_facts(raw: Vec<MemoryFact>) -> Vec<MemoryFact> {
+    raw.into_iter()
+        .map(|mut f| { f.sanitize(); f })
+        .filter(|f| f.is_valid())
+        .take(MAX_FACTS_PER_CALL)
+        .collect()
+}
 
 fn call_context(
     prompt: &str,
@@ -145,7 +140,7 @@ fn call_context(
 ) -> Option<ContextDecision> {
     let msg = self::prompt::build_context_message(prompt, candidates);
     match client::call(config, self::prompt::CONTEXT_SYSTEM, &msg) {
-        Ok(d) => Some(d),
+        Ok(d)  => Some(d),
         Err(e) => { tracing::warn!("context call failed: {e:#}"); None }
     }
 }
@@ -158,13 +153,15 @@ fn call_memory(
 ) -> Option<MemoryDecision> {
     let msg = self::prompt::build_memory_message(prompt, task_plan, facts);
     match client::call(config, self::prompt::MEMORY_SYSTEM, &msg) {
-        Ok(d) => Some(d),
+        Ok(d)  => Some(d),
         Err(e) => { tracing::warn!("memory call failed: {e:#}"); None }
     }
 }
 
+/// Keeps only file paths that appeared in the candidate list.
+/// Falls back to the top-3 candidates if the LLM returned no valid paths.
 fn validate_files(llm_files: Vec<String>, candidates: &AnalysisResult) -> Vec<String> {
-    let valid: HashSet<String> = candidates.files
+    let valid_paths: HashSet<String> = candidates.files
         .iter()
         .map(|f| f.path.to_string_lossy().to_string())
         .collect();
@@ -172,13 +169,12 @@ fn validate_files(llm_files: Vec<String>, candidates: &AnalysisResult) -> Vec<St
     let validated: Vec<String> = llm_files
         .into_iter()
         .filter(|f| {
-            let keep = valid.contains(f);
+            let keep = valid_paths.contains(f);
             if !keep { tracing::debug!("dropping hallucinated file: {f}"); }
             keep
         })
         .collect();
 
-    // Fallback to top-3 candidates if LLM returned nothing valid
     if validated.is_empty() && !candidates.files.is_empty() {
         tracing::debug!("no valid files from LLM, using top-3 candidates");
         return candidates.files.iter().take(3)

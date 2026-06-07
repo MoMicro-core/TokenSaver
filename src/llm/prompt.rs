@@ -153,10 +153,9 @@ fn detect_language_hint(candidates: &AnalysisResult) -> String {
         *counts.entry(lang).or_insert(0) += 1;
     }
 
-    let mut sorted: Vec<(&&str, &usize)> = counts.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(a.1));
-
-    sorted.iter().map(|(l, _)| **l).collect::<Vec<_>>().join(" and ")
+    let mut langs: Vec<(&str, usize)> = counts.into_iter().collect();
+    langs.sort_by(|a, b| b.1.cmp(&a.1));
+    langs.iter().map(|(l, _)| *l).collect::<Vec<_>>().join(" and ")
 }
 
 fn escape_quotes(s: &str) -> String {

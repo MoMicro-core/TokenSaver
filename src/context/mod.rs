@@ -3,11 +3,6 @@ use crate::config::Config;
 use crate::llm::LlmDecision;
 use crate::memory::store::Fact;
 
-/// Builds the `additionalContext` string injected by Claude Code alongside the user's prompt.
-///
-/// When the local LLM is available its structured decision is used — task plan, reasoning,
-/// and LLM-selected files take priority. When the LLM is unavailable the deterministic
-/// analysis results are used as a fallback so the hook always produces useful context.
 pub fn build(
     candidates: &AnalysisResult,
     decision: &Option<LlmDecision>,
@@ -189,13 +184,11 @@ mod tests {
         let decision = Some(LlmDecision {
             task_plan: "Fix the session expiry redirect.".into(),
             relevant_files: vec!["src/auth.ts".into()],
-            reasoning: "Session module handles JWT expiry.".into(),
             ..Default::default()
         });
         let ctx = build(&candidates, &decision, &[], &Config::default());
         assert!(ctx.contains("Task:"));
         assert!(ctx.contains("Fix the session expiry redirect."));
-        assert!(ctx.contains("Reasoning:"));
         assert!(ctx.contains("validateSession"));
     }
 
