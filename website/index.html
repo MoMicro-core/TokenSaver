@@ -1,988 +1,1674 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TokenSaver — Claude Code, but smarter</title>
-  <meta name="description" content="TokenSaver intercepts your Claude Code prompts, analyzes your repo with a local LLM, and injects a structured task plan — invisibly." />
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0" />
+    <title>TokenSaver — Claude Code, but smarter</title>
+    <meta
+      name="description"
+      content="TokenSaver intercepts your Claude Code prompts, analyzes your repo with a local LLM, and injects a structured task plan — invisibly." />
 
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <!-- Prefetch logo -->
-  <link rel="prefetch" href="https://momicro.com/preview/logo.webp" as="image" />
+    <link
+      rel="preconnect"
+      href="https://fonts.googleapis.com" />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet" />
+    <!-- Prefetch logo -->
+    <link
+      rel="prefetch"
+      href="https://momicro.com/preview/logo.webp"
+      as="image" />
 
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- GSAP used only for SVG line draw — everything else is CSS + IntersectionObserver -->
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- GSAP used only for SVG line draw — everything else is CSS + IntersectionObserver -->
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
 
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['Inter', 'sans-serif'],
-            mono: ['JetBrains Mono', 'monospace'],
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            colors: {
+              canvas: '#070c17',
+              card: '#0d1424',
+              raised: '#0f1a2e',
+              border: '#1a2740',
+              cyan: '#00d4ff',
+              violet: '#8b5cf6',
+              emerald: '#10b981',
+              amber: '#f59e0b',
+            },
           },
-          colors: {
-            canvas:  '#070c17',
-            card:    '#0d1424',
-            raised:  '#0f1a2e',
-            border:  '#1a2740',
-            cyan:    '#00d4ff',
-            violet:  '#8b5cf6',
-            emerald: '#10b981',
-            amber:   '#f59e0b',
-          }
+        },
+      };
+    </script>
+
+    <style>
+      /* ── Reset & base ──────────────────────────────────────────── */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        background: #070c17;
+        color: #e2e8f0;
+        font-family: 'Inter', sans-serif;
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::-webkit-scrollbar {
+        width: 5px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #070c17;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #1a2740;
+        border-radius: 3px;
+      }
+
+      /* ── Dot grid — pure CSS, zero paint cost ──────────────────── */
+      .dot-grid {
+        background-image: radial-gradient(
+          circle,
+          rgba(255, 255, 255, 0.035) 1px,
+          transparent 1px
+        );
+        background-size: 36px 36px;
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      /* ── Section glow — radial-gradient instead of filter:blur ─── *
+     * This renders in a single GPU-composited pass, no repaint.    */
+      .glow-section {
+        position: relative;
+        background:
+          radial-gradient(
+            ellipse 70% 55% at 10% 25%,
+            rgba(0, 212, 255, 0.07) 0%,
+            transparent 65%
+          ),
+          radial-gradient(
+            ellipse 55% 50% at 88% 18%,
+            rgba(139, 92, 246, 0.07) 0%,
+            transparent 65%
+          ),
+          #070c17;
+      }
+      .glow-section-violet {
+        background:
+          radial-gradient(
+            ellipse 65% 55% at 5% 30%,
+            rgba(139, 92, 246, 0.08) 0%,
+            transparent 60%
+          ),
+          radial-gradient(
+            ellipse 50% 45% at 95% 70%,
+            rgba(0, 212, 255, 0.06) 0%,
+            transparent 60%
+          ),
+          #070c17;
+      }
+      .glow-section-emerald {
+        background:
+          radial-gradient(
+            ellipse 60% 50% at 92% 15%,
+            rgba(16, 185, 129, 0.06) 0%,
+            transparent 60%
+          ),
+          radial-gradient(
+            ellipse 50% 45% at 5% 80%,
+            rgba(0, 212, 255, 0.05) 0%,
+            transparent 60%
+          ),
+          #070c17;
+      }
+
+      /* ── Nav ───────────────────────────────────────────────────── */
+      #nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 100;
+        padding: 16px 40px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        transition:
+          background 0.35s ease,
+          border-color 0.35s ease;
+        border-bottom: 1px solid transparent;
+        will-change: background;
+      }
+      #nav.scrolled {
+        background: rgba(7, 12, 23, 0.88);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-color: #1a2740;
+      }
+
+      /* ── Terminal ──────────────────────────────────────────────── */
+      .terminal {
+        background: #080e1c;
+        border: 1px solid #1a2740;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow:
+          0 0 0 1px rgba(0, 212, 255, 0.06),
+          0 24px 64px rgba(0, 0, 0, 0.55);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 13px;
+        /* promote to own compositing layer */
+        transform: translateZ(0);
+      }
+      .terminal-bar {
+        background: #0b1422;
+        padding: 11px 16px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        border-bottom: 1px solid #1a2740;
+      }
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .dot-red {
+        background: #ff5f56;
+      }
+      .dot-yellow {
+        background: #febc2e;
+      }
+      .dot-green {
+        background: #27c840;
+      }
+      .terminal-title {
+        flex: 1;
+        text-align: center;
+        color: #374151;
+        font-size: 12px;
+      }
+      .terminal-body {
+        padding: 18px 22px;
+        min-height: 300px;
+        overflow: hidden;
+      }
+      #terminal-lines .tl {
+        display: block;
+        white-space: pre;
+        line-height: 1.75;
+        /* Each line is rendered by JS — no initial paint cost */
+      }
+      .t-dim {
+        color: #374151;
+      }
+      .t-muted {
+        color: #4b5563;
+      }
+      .t-default {
+        color: #94a3b8;
+      }
+      .t-cyan {
+        color: #00d4ff;
+      }
+      .t-violet {
+        color: #a78bfa;
+      }
+      .t-green {
+        color: #34d399;
+      }
+      .t-white {
+        color: #e2e8f0;
+      }
+      .t-border {
+        color: #1e3048;
+      }
+      .t-bold {
+        font-weight: 600;
+      }
+      #t-cursor {
+        display: inline-block;
+        width: 8px;
+        height: 15px;
+        background: #00d4ff;
+        vertical-align: text-bottom;
+        animation: blink 1s step-end infinite;
+      }
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0;
         }
       }
-    }
-  </script>
 
-  <style>
-    /* ── Reset & base ──────────────────────────────────────────── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html { scroll-behavior: smooth; }
-    body {
-      background: #070c17;
-      color: #e2e8f0;
-      font-family: 'Inter', sans-serif;
-      overflow-x: hidden;
-      -webkit-font-smoothing: antialiased;
-    }
-    ::-webkit-scrollbar { width: 5px; }
-    ::-webkit-scrollbar-track { background: #070c17; }
-    ::-webkit-scrollbar-thumb { background: #1a2740; border-radius: 3px; }
-
-    /* ── Dot grid — pure CSS, zero paint cost ──────────────────── */
-    .dot-grid {
-      background-image: radial-gradient(circle, rgba(255,255,255,0.035) 1px, transparent 1px);
-      background-size: 36px 36px;
-      position: absolute; inset: 0; pointer-events: none;
-    }
-
-    /* ── Section glow — radial-gradient instead of filter:blur ─── *
-     * This renders in a single GPU-composited pass, no repaint.    */
-    .glow-section {
-      position: relative;
-      background:
-        radial-gradient(ellipse 70% 55% at 10% 25%, rgba(0,212,255,0.07)  0%, transparent 65%),
-        radial-gradient(ellipse 55% 50% at 88% 18%, rgba(139,92,246,0.07) 0%, transparent 65%),
-        #070c17;
-    }
-    .glow-section-violet {
-      background:
-        radial-gradient(ellipse 65% 55% at 5%  30%, rgba(139,92,246,0.08) 0%, transparent 60%),
-        radial-gradient(ellipse 50% 45% at 95% 70%, rgba(0,212,255,0.06)  0%, transparent 60%),
-        #070c17;
-    }
-    .glow-section-emerald {
-      background:
-        radial-gradient(ellipse 60% 50% at 92% 15%, rgba(16,185,129,0.06) 0%, transparent 60%),
-        radial-gradient(ellipse 50% 45% at 5%  80%, rgba(0,212,255,0.05)  0%, transparent 60%),
-        #070c17;
-    }
-
-    /* ── Nav ───────────────────────────────────────────────────── */
-    #nav {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
-      padding: 16px 40px;
-      display: flex; align-items: center; justify-content: space-between;
-      transition: background 0.35s ease, border-color 0.35s ease;
-      border-bottom: 1px solid transparent;
-      will-change: background;
-    }
-    #nav.scrolled {
-      background: rgba(7, 12, 23, 0.88);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border-color: #1a2740;
-    }
-
-    /* ── Terminal ──────────────────────────────────────────────── */
-    .terminal {
-      background: #080e1c;
-      border: 1px solid #1a2740;
-      border-radius: 12px;
-      overflow: hidden;
-      box-shadow: 0 0 0 1px rgba(0,212,255,0.06), 0 24px 64px rgba(0,0,0,0.55);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      /* promote to own compositing layer */
-      transform: translateZ(0);
-    }
-    .terminal-bar {
-      background: #0b1422;
-      padding: 11px 16px;
-      display: flex; align-items: center; gap: 7px;
-      border-bottom: 1px solid #1a2740;
-    }
-    .dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-    .dot-red    { background: #ff5f56; }
-    .dot-yellow { background: #febc2e; }
-    .dot-green  { background: #27c840; }
-    .terminal-title {
-      flex: 1; text-align: center;
-      color: #374151; font-size: 12px;
-    }
-    .terminal-body { padding: 18px 22px; min-height: 300px; overflow: hidden; }
-    #terminal-lines .tl {
-      display: block; white-space: pre; line-height: 1.75;
-      /* Each line is rendered by JS — no initial paint cost */
-    }
-    .t-dim     { color: #374151; }
-    .t-muted   { color: #4b5563; }
-    .t-default { color: #94a3b8; }
-    .t-cyan    { color: #00d4ff; }
-    .t-violet  { color: #a78bfa; }
-    .t-green   { color: #34d399; }
-    .t-white   { color: #e2e8f0; }
-    .t-border  { color: #1e3048; }
-    .t-bold    { font-weight: 600; }
-    #t-cursor {
-      display: inline-block; width: 8px; height: 15px;
-      background: #00d4ff; vertical-align: text-bottom;
-      animation: blink 1s step-end infinite;
-    }
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-
-    /* ── Code window ───────────────────────────────────────────── */
-    .code-win {
-      background: #080e1c;
-      border: 1px solid #1a2740;
-      border-radius: 10px;
-      overflow: hidden;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      transform: translateZ(0);
-    }
-    .code-win-bar {
-      background: #0b1422;
-      padding: 10px 14px;
-      display: flex; gap: 7px; align-items: center;
-      border-bottom: 1px solid #1a2740;
-    }
-    .code-body { padding: 18px 20px; line-height: 1.75; }
-
-    /* ── Scroll reveals — CSS only, GPU transform+opacity ──────── */
-    .reveal {
-      opacity: 0;
-      transform: translateY(28px);
-      transition: opacity 0.55s ease, transform 0.55s ease;
-      will-change: transform, opacity;
-    }
-    .reveal.visible {
-      opacity: 1;
-      transform: translateY(0);
-      will-change: auto;
-    }
-    .reveal.d1 { transition-delay: 0.1s; }
-    .reveal.d2 { transition-delay: 0.2s; }
-    .reveal.d3 { transition-delay: 0.3s; }
-    .reveal.d4 { transition-delay: 0.4s; }
-
-    /* ── Transform blocks (before/after) ──────────────────────── */
-    .tb {
-      opacity: 0;
-      transform: translateY(10px);
-      transition: opacity 0.45s ease, transform 0.45s ease;
-      margin-bottom: 12px;
-      will-change: transform, opacity;
-    }
-    .tb.visible { opacity: 1; transform: translateY(0); will-change: auto; }
-    .tb.d1 { transition-delay: 0.12s; }
-    .tb.d2 { transition-delay: 0.26s; }
-    .tb.d3 { transition-delay: 0.40s; }
-    .tb.d4 { transition-delay: 0.54s; }
-    .tb.d5 { transition-delay: 0.68s; }
-    .tb-label {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px; font-weight: 600;
-      letter-spacing: 0.07em; text-transform: uppercase;
-      margin-bottom: 3px;
-    }
-    .tb-val {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px; color: #94a3b8; line-height: 1.65;
-    }
-
-    /* ── Memory card lines — CSS keyframe, no JS animation ─────── */
-    .memory-card {
-      background: #0d1424;
-      border: 1px solid #1a2740;
-      border-radius: 12px;
-      overflow: hidden;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      transform: translateZ(0);
-    }
-    .mc-header {
-      padding: 11px 15px;
-      border-bottom: 1px solid #1a2740;
-      display: flex; align-items: center; gap: 8px;
-    }
-    .mc-body { padding: 13px 15px; min-height: 150px; line-height: 1.85; }
-    .ml {
-      display: block;
-      opacity: 0;
-      transform: translateX(-6px);
-      transition: opacity 0.3s ease, transform 0.3s ease;
-      will-change: transform, opacity;
-    }
-    .ml.in { opacity: 1; transform: translateX(0); will-change: auto; }
-
-    /* ── Pipeline node ─────────────────────────────────────────── */
-    .p-node {
-      background: #0d1424;
-      border: 1px solid #1a2740;
-      border-radius: 12px;
-      padding: 24px;
-      text-align: center;
-      transition: border-color 0.25s, box-shadow 0.25s;
-    }
-    .p-node:hover {
-      border-color: rgba(0,212,255,0.25);
-      box-shadow: 0 0 20px rgba(0,212,255,0.07);
-    }
-    .p-icon {
-      width: 46px; height: 46px; border-radius: 11px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 20px; margin: 0 auto 11px;
-    }
-
-    /* ── Pipeline SVG line ─────────────────────────────────────── */
-    #pipeline-svg {
-      position: absolute; top: 50%; left: 0; right: 0; width: 100%;
-      transform: translateY(-50%);
-      pointer-events: none; overflow: visible;
-    }
-
-    /* ── Gradient text ─────────────────────────────────────────── */
-    .grad {
-      background: linear-gradient(135deg, #00d4ff 0%, #8b5cf6 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-
-    /* ── Glow border (box-shadow only, no filter) ──────────────── */
-    .glow-cyan-border {
-      box-shadow: 0 0 0 1px rgba(0,212,255,0.18), 0 0 18px rgba(0,212,255,0.06);
-    }
-
-    /* ── Badge ─────────────────────────────────────────────────── */
-    .badge {
-      display: inline-flex; align-items: center; gap: 6px;
-      background: rgba(0,212,255,0.07);
-      border: 1px solid rgba(0,212,255,0.18);
-      color: #00d4ff; font-size: 12px; font-weight: 500;
-      padding: 4px 13px; border-radius: 999px;
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* ── Status dot — box-shadow pulse (GPU) ───────────────────── */
-    .s-dot {
-      width: 7px; height: 7px; border-radius: 50%;
-      background: #10b981;
-      animation: sdot 2s ease-in-out infinite;
-    }
-    @keyframes sdot {
-      0%,100% { box-shadow: 0 0 6px  rgba(16,185,129,0.5); }
-      50%      { box-shadow: 0 0 14px rgba(16,185,129,0.9); }
-    }
-
-    /* ── Step number ───────────────────────────────────────────── */
-    .step-n {
-      width: 30px; height: 30px; border-radius: 50%;
-      background: linear-gradient(135deg, #00d4ff, #8b5cf6);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 12px; font-weight: 700; color: #fff; flex-shrink: 0;
-    }
-
-    /* ── Copy button ───────────────────────────────────────────── */
-    .copy-btn {
-      background: #111b2e; border: 1px solid #1e2d4a;
-      border-radius: 6px; padding: 3px 10px;
-      color: #4b5563; font-size: 11px;
-      font-family: 'JetBrains Mono', monospace;
-      cursor: pointer;
-      transition: color 0.2s, border-color 0.2s, background 0.2s;
-    }
-    .copy-btn:hover { background: #172035; color: #00d4ff; border-color: rgba(0,212,255,0.28); }
-
-    /* ── content-visibility: auto on off-screen sections ──────── */
-    section { content-visibility: auto; contain-intrinsic-size: 0 600px; }
-
-    /* ── Reduced motion override ───────────────────────────────── */
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
-        scroll-behavior: auto !important;
+      /* ── Code window ───────────────────────────────────────────── */
+      .code-win {
+        background: #080e1c;
+        border: 1px solid #1a2740;
+        border-radius: 10px;
+        overflow: hidden;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 13px;
+        transform: translateZ(0);
       }
-      .reveal, .tb, .ml { opacity: 1 !important; transform: none !important; }
-    }
-  </style>
-</head>
+      .code-win-bar {
+        background: #0b1422;
+        padding: 10px 14px;
+        display: flex;
+        gap: 7px;
+        align-items: center;
+        border-bottom: 1px solid #1a2740;
+      }
+      .code-body {
+        padding: 18px 20px;
+        line-height: 1.75;
+      }
 
-<body>
+      /* ── Scroll reveals — CSS only, GPU transform+opacity ──────── */
+      .reveal {
+        opacity: 0;
+        transform: translateY(28px);
+        transition:
+          opacity 0.55s ease,
+          transform 0.55s ease;
+        will-change: transform, opacity;
+      }
+      .reveal.visible {
+        opacity: 1;
+        transform: translateY(0);
+        will-change: auto;
+      }
+      .reveal.d1 {
+        transition-delay: 0.1s;
+      }
+      .reveal.d2 {
+        transition-delay: 0.2s;
+      }
+      .reveal.d3 {
+        transition-delay: 0.3s;
+      }
+      .reveal.d4 {
+        transition-delay: 0.4s;
+      }
 
-<!-- ══════════════════════════════════ NAV ════════════════════════════════════ -->
-<nav id="nav">
-  <a href="#" class="flex items-center gap-3 no-underline">
-    <img src="https://momicro.com/preview/logo.webp"
-         alt="MoMicro logo" width="28" height="28"
-         class="rounded-md" loading="eager" />
-    <span class="text-white font-semibold text-base">TokenSaver</span>
-  </a>
+      /* ── Transform blocks (before/after) ──────────────────────── */
+      .tb {
+        opacity: 0;
+        transform: translateY(10px);
+        transition:
+          opacity 0.45s ease,
+          transform 0.45s ease;
+        margin-bottom: 12px;
+        will-change: transform, opacity;
+      }
+      .tb.visible {
+        opacity: 1;
+        transform: translateY(0);
+        will-change: auto;
+      }
+      .tb.d1 {
+        transition-delay: 0.12s;
+      }
+      .tb.d2 {
+        transition-delay: 0.26s;
+      }
+      .tb.d3 {
+        transition-delay: 0.4s;
+      }
+      .tb.d4 {
+        transition-delay: 0.54s;
+      }
+      .tb.d5 {
+        transition-delay: 0.68s;
+      }
+      .tb-label {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        margin-bottom: 3px;
+      }
+      .tb-val {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 13px;
+        color: #94a3b8;
+        line-height: 1.65;
+      }
 
-  <div class="hidden md:flex items-center gap-7">
-    <a href="#how-it-works" class="text-slate-400 hover:text-white text-sm transition-colors">How it works</a>
-    <a href="#memory"       class="text-slate-400 hover:text-white text-sm transition-colors">Memory</a>
-    <a href="#install"      class="text-slate-400 hover:text-white text-sm transition-colors">Install</a>
-  </div>
+      /* ── Memory card lines — CSS keyframe, no JS animation ─────── */
+      .memory-card {
+        background: #0d1424;
+        border: 1px solid #1a2740;
+        border-radius: 12px;
+        overflow: hidden;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 12px;
+        transform: translateZ(0);
+      }
+      .mc-header {
+        padding: 11px 15px;
+        border-bottom: 1px solid #1a2740;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .mc-body {
+        padding: 13px 15px;
+        min-height: 150px;
+        line-height: 1.85;
+      }
+      .ml {
+        display: block;
+        opacity: 0;
+        transform: translateX(-6px);
+        transition:
+          opacity 0.3s ease,
+          transform 0.3s ease;
+        will-change: transform, opacity;
+      }
+      .ml.in {
+        opacity: 1;
+        transform: translateX(0);
+        will-change: auto;
+      }
 
-  <a href="https://github.com/MoMicro-core/TokenSaver"
-     class="flex items-center gap-2 border border-border rounded-lg px-4 py-2
-            text-sm text-slate-300 hover:text-white hover:border-slate-500 transition-all"
-     target="_blank" rel="noopener">
-    <svg class="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
-    </svg>
-    GitHub
-  </a>
-</nav>
+      /* ── Pipeline node ─────────────────────────────────────────── */
+      .p-node {
+        background: #0d1424;
+        border: 1px solid #1a2740;
+        border-radius: 12px;
+        padding: 24px;
+        text-align: center;
+        transition:
+          border-color 0.25s,
+          box-shadow 0.25s;
+      }
+      .p-node:hover {
+        border-color: rgba(0, 212, 255, 0.25);
+        box-shadow: 0 0 20px rgba(0, 212, 255, 0.07);
+      }
+      .p-icon {
+        width: 46px;
+        height: 46px;
+        border-radius: 11px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 20px;
+        margin: 0 auto 11px;
+      }
 
+      /* ── Pipeline SVG line ─────────────────────────────────────── */
+      #pipeline-svg {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        right: 0;
+        width: 100%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        overflow: visible;
+      }
 
-<!-- ══════════════════════════════════ HERO ═══════════════════════════════════ -->
-<section class="glow-section relative min-h-screen flex flex-col items-center justify-center pt-24 pb-20 overflow-hidden">
-  <div class="dot-grid" aria-hidden="true"></div>
+      /* ── Gradient text ─────────────────────────────────────────── */
+      .grad {
+        background: linear-gradient(135deg, #00d4ff 0%, #8b5cf6 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
 
-  <!-- Text content -->
-  <div class="relative z-10 text-center max-w-3xl mx-auto px-6 mb-12">
-    <div class="badge mb-6">
-      <span class="s-dot"></span>
-      Powered by Qwen2.5-Coder · Runs locally
-    </div>
+      /* ── Glow border (box-shadow only, no filter) ──────────────── */
+      .glow-cyan-border {
+        box-shadow:
+          0 0 0 1px rgba(0, 212, 255, 0.18),
+          0 0 18px rgba(0, 212, 255, 0.06);
+      }
 
-    <h1 class="text-5xl md:text-7xl font-extrabold leading-[1.08] tracking-tight mb-6">
-      Every prompt,<br>
-      <span class="grad">smarter.</span>
-    </h1>
+      /* ── Badge ─────────────────────────────────────────────────── */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(0, 212, 255, 0.07);
+        border: 1px solid rgba(0, 212, 255, 0.18);
+        color: #00d4ff;
+        font-size: 12px;
+        font-weight: 500;
+        padding: 4px 13px;
+        border-radius: 999px;
+        font-family: 'JetBrains Mono', monospace;
+      }
 
-    <p class="text-lg text-slate-400 leading-relaxed max-w-xl mx-auto mb-10">
-      TokenSaver intercepts your Claude Code prompts, analyzes your repo with a
-      local LLM, and injects a structured task plan — invisibly, before Claude sees it.
-    </p>
+      /* ── Status dot — box-shadow pulse (GPU) ───────────────────── */
+      .s-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #10b981;
+        animation: sdot 2s ease-in-out infinite;
+      }
+      @keyframes sdot {
+        0%,
+        100% {
+          box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
+        }
+        50% {
+          box-shadow: 0 0 14px rgba(16, 185, 129, 0.9);
+        }
+      }
 
-    <div class="flex items-center justify-center gap-4 flex-wrap">
-      <a href="#install"
-         class="bg-cyan text-canvas font-semibold px-6 py-3 rounded-lg
-                hover:opacity-90 transition-opacity text-sm">
-        Get Started →
+      /* ── Step number ───────────────────────────────────────────── */
+      .step-n {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #00d4ff, #8b5cf6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 700;
+        color: #fff;
+        flex-shrink: 0;
+      }
+
+      /* ── Copy button ───────────────────────────────────────────── */
+      .copy-btn {
+        background: #111b2e;
+        border: 1px solid #1e2d4a;
+        border-radius: 6px;
+        padding: 3px 10px;
+        color: #4b5563;
+        font-size: 11px;
+        font-family: 'JetBrains Mono', monospace;
+        cursor: pointer;
+        transition:
+          color 0.2s,
+          border-color 0.2s,
+          background 0.2s;
+      }
+      .copy-btn:hover {
+        background: #172035;
+        color: #00d4ff;
+        border-color: rgba(0, 212, 255, 0.28);
+      }
+
+      /* ── content-visibility: auto on off-screen sections ──────── */
+      section {
+        content-visibility: auto;
+        contain-intrinsic-size: 0 600px;
+      }
+
+      /* ── Reduced motion override ───────────────────────────────── */
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+          scroll-behavior: auto !important;
+        }
+        .reveal,
+        .tb,
+        .ml {
+          opacity: 1 !important;
+          transform: none !important;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- ══════════════════════════════════ NAV ════════════════════════════════════ -->
+    <nav id="nav">
+      <a
+        href="#"
+        class="flex items-center gap-3 no-underline">
+        <img
+          src="https://momicro.com/preview/logo.webp"
+          alt="MoMicro logo"
+          width="28"
+          height="28"
+          class="rounded-md"
+          loading="eager" />
+        <span class="text-white font-semibold text-base">TokenSaver</span>
       </a>
-      <a href="https://github.com/MoMicro-core/TokenSaver"
-         class="border border-border text-slate-300 font-medium px-6 py-3 rounded-lg
-                hover:border-slate-500 hover:text-white transition-all text-sm"
-         target="_blank" rel="noopener">
-        View on GitHub
+
+      <div class="hidden md:flex items-center gap-7">
+        <a
+          href="#how-it-works"
+          class="text-slate-400 hover:text-white text-sm transition-colors"
+          >How it works</a
+        >
+        <a
+          href="#memory"
+          class="text-slate-400 hover:text-white text-sm transition-colors"
+          >Memory</a
+        >
+        <a
+          href="#install"
+          class="text-slate-400 hover:text-white text-sm transition-colors"
+          >Install</a
+        >
+      </div>
+
+      <a
+        href="https://github.com/MoMicro-core/TokenSaver"
+        class="flex items-center gap-2 border border-border rounded-lg px-4 py-2 text-sm text-slate-300 hover:text-white hover:border-slate-500 transition-all"
+        target="_blank"
+        rel="noopener">
+        <svg
+          class="w-4 h-4 flex-shrink-0"
+          fill="currentColor"
+          viewBox="0 0 24 24"
+          aria-hidden="true">
+          <path
+            d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+        </svg>
+        GitHub
       </a>
-    </div>
-  </div>
+    </nav>
 
-  <!-- Terminal -->
-  <div class="relative z-10 w-full max-w-2xl mx-auto px-6">
-    <div class="terminal glow-cyan-border" id="hero-terminal">
-      <div class="terminal-bar">
-        <span class="dot dot-red"></span>
-        <span class="dot dot-yellow"></span>
-        <span class="dot dot-green"></span>
-        <span class="terminal-title">tokensaver — process</span>
+    <!-- ══════════════════════════════════ HERO ═══════════════════════════════════ -->
+    <section
+      class="glow-section relative min-h-screen flex flex-col items-center justify-center pt-24 pb-20 overflow-hidden">
+      <div
+        class="dot-grid"
+        aria-hidden="true"></div>
+
+      <!-- Text content -->
+      <div class="relative z-10 text-center max-w-3xl mx-auto px-6 mb-12">
+        <div class="badge mb-6">
+          <span class="s-dot"></span>
+          Runs locally to save your tokens
+        </div>
+
+        <h1
+          class="text-5xl md:text-7xl font-extrabold leading-[1.08] tracking-tight mb-6">
+          Every prompt,<br />
+          <span class="grad">smarter.</span>
+        </h1>
+
+        <p
+          class="text-lg text-slate-400 leading-relaxed max-w-xl mx-auto mb-10">
+          TokenSaver intercepts your Claude Code prompts, analyzes your repo
+          with a local LLM, and injects a structured task plan — invisibly,
+          before Claude sees it.
+        </p>
+
+        <div class="flex items-center justify-center gap-4 flex-wrap">
+          <a
+            href="#install"
+            class="bg-cyan text-canvas font-semibold px-6 py-3 rounded-lg hover:opacity-90 transition-opacity text-sm">
+            Get Started →
+          </a>
+          <a
+            href="https://github.com/MoMicro-core/TokenSaver"
+            class="border border-border text-slate-300 font-medium px-6 py-3 rounded-lg hover:border-slate-500 hover:text-white transition-all text-sm"
+            target="_blank"
+            rel="noopener">
+            View on GitHub
+          </a>
+        </div>
       </div>
-      <div class="terminal-body">
-        <div id="terminal-lines"></div>
-        <span id="t-cursor" aria-hidden="true"></span>
+
+      <!-- Terminal -->
+      <div class="relative z-10 w-full max-w-2xl mx-auto px-6">
+        <div
+          class="terminal glow-cyan-border"
+          id="hero-terminal">
+          <div class="terminal-bar">
+            <span class="dot dot-red"></span>
+            <span class="dot dot-yellow"></span>
+            <span class="dot dot-green"></span>
+            <span class="terminal-title">tokensaver — process</span>
+          </div>
+          <div class="terminal-body">
+            <div id="terminal-lines"></div>
+            <span
+              id="t-cursor"
+              aria-hidden="true"></span>
+          </div>
+        </div>
       </div>
-    </div>
-  </div>
 
-  <!-- scroll hint -->
-  <div class="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 opacity-30" aria-hidden="true">
-    <span class="text-xs text-slate-500 font-mono">scroll</span>
-    <svg class="w-4 h-4 text-slate-500 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-    </svg>
-  </div>
-</section>
+      <!-- scroll hint -->
+      <div
+        class="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 opacity-30"
+        aria-hidden="true">
+        <span class="text-xs text-slate-500 font-mono">scroll</span>
+        <svg
+          class="w-4 h-4 text-slate-500 animate-bounce"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M19 9l-7 7-7-7" />
+        </svg>
+      </div>
+    </section>
 
+    <!-- ══════════════════════════════════ PIPELINE ═══════════════════════════════ -->
+    <section
+      id="how-it-works"
+      class="relative py-28 px-6 overflow-hidden"
+      style="background: #070c17">
+      <div
+        class="dot-grid opacity-40"
+        aria-hidden="true"></div>
 
-<!-- ══════════════════════════════════ PIPELINE ═══════════════════════════════ -->
-<section id="how-it-works" class="relative py-28 px-6 overflow-hidden" style="background:#070c17">
-  <div class="dot-grid opacity-40" aria-hidden="true"></div>
+      <div class="relative z-10 max-w-5xl mx-auto">
+        <div class="text-center mb-16 reveal">
+          <p class="text-cyan font-mono text-sm mb-3">// how it works</p>
+          <h2 class="text-4xl md:text-5xl font-bold mb-4">
+            Three steps, zero friction.
+          </h2>
+          <p class="text-slate-400 max-w-lg mx-auto">
+            The hook fires on every prompt. You keep using Claude Code exactly
+            as before.
+          </p>
+        </div>
 
-  <div class="relative z-10 max-w-5xl mx-auto">
+        <div
+          class="relative grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
+          <!-- SVG connector (desktop) -->
+          <svg
+            id="pipeline-svg"
+            class="hidden md:block absolute"
+            height="2"
+            style="top: 50%; pointer-events: none; overflow: visible"
+            aria-hidden="true">
+            <defs>
+              <linearGradient
+                id="lg"
+                x1="0%"
+                y1="0%"
+                x2="100%"
+                y2="0%">
+                <stop
+                  offset="0%"
+                  stop-color="#00d4ff" />
+                <stop
+                  offset="100%"
+                  stop-color="#8b5cf6" />
+              </linearGradient>
+            </defs>
+            <!-- static dashed guide -->
+            <line
+              x1="33.5%"
+              y1="0"
+              x2="66.5%"
+              y2="0"
+              stroke="#1a2740"
+              stroke-width="1.5"
+              stroke-dasharray="4 3" />
+            <!-- animated gradient overlay -->
+            <line
+              id="pipe-line"
+              x1="33.5%"
+              y1="0"
+              x2="66.5%"
+              y2="0"
+              stroke="url(#lg)"
+              stroke-width="2"
+              stroke-dasharray="500"
+              stroke-dashoffset="500" />
+          </svg>
 
-    <div class="text-center mb-16 reveal">
-      <p class="text-cyan font-mono text-sm mb-3">// how it works</p>
-      <h2 class="text-4xl md:text-5xl font-bold mb-4">Three steps, zero friction.</h2>
-      <p class="text-slate-400 max-w-lg mx-auto">
-        The hook fires on every prompt. You keep using Claude Code exactly as before.
-      </p>
-    </div>
+          <div
+            class="p-node reveal"
+            id="pn1">
+            <div class="p-icon bg-cyan/10 text-cyan mb-3">
+              <svg
+                class="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+            </div>
+            <div class="text-xs font-mono text-cyan mb-1">01 / intercept</div>
+            <h3 class="font-semibold text-white text-sm mb-2">Hook fires</h3>
+            <p class="text-slate-400 text-xs leading-relaxed">
+              Claude Code's
+              <code class="text-violet text-xs bg-violet/10 px-1 rounded"
+                >UserPromptSubmit</code
+              >
+              hook routes your prompt through TokenSaver before Claude sees it.
+            </p>
+          </div>
 
-    <div class="relative grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
+          <div
+            class="p-node reveal d2"
+            id="pn2">
+            <div class="p-icon bg-violet/10 text-violet mb-3">
+              <svg
+                class="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+            </div>
+            <div class="text-xs font-mono text-violet mb-1">02 / analyze</div>
+            <h3 class="font-semibold text-white text-sm mb-2">
+              Local LLM decides
+            </h3>
+            <p class="text-slate-400 text-xs leading-relaxed">
+              Fast file scanner finds candidates. Qwen2.5-Coder selects the
+              truly relevant ones and structures a precise task plan.
+            </p>
+          </div>
 
-      <!-- SVG connector (desktop) -->
-      <svg id="pipeline-svg" class="hidden md:block absolute" height="2"
-           style="top:50%;pointer-events:none;overflow:visible" aria-hidden="true">
-        <defs>
-          <linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%"   stop-color="#00d4ff"/>
-            <stop offset="100%" stop-color="#8b5cf6"/>
-          </linearGradient>
-        </defs>
-        <!-- static dashed guide -->
-        <line x1="33.5%" y1="0" x2="66.5%" y2="0"
-              stroke="#1a2740" stroke-width="1.5" stroke-dasharray="4 3"/>
-        <!-- animated gradient overlay -->
-        <line id="pipe-line" x1="33.5%" y1="0" x2="66.5%" y2="0"
-              stroke="url(#lg)" stroke-width="2"
-              stroke-dasharray="500" stroke-dashoffset="500"/>
-      </svg>
+          <div
+            class="p-node reveal d3"
+            id="pn3">
+            <div
+              class="p-icon text-emerald mb-3"
+              style="background: rgba(16, 185, 129, 0.1)">
+              <svg
+                class="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+              </svg>
+            </div>
+            <div class="text-xs font-mono text-emerald mb-1">03 / inject</div>
+            <h3 class="font-semibold text-white text-sm mb-2">
+              Claude gets context
+            </h3>
+            <p class="text-slate-400 text-xs leading-relaxed">
+              Structured context arrives alongside your original prompt. Claude
+              starts with the right files and a clear task — no repo exploration
+              needed.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
 
-      <div class="p-node reveal"    id="pn1"><div class="p-icon bg-cyan/10 text-cyan mb-3">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-      </div><div class="text-xs font-mono text-cyan mb-1">01 / intercept</div>
-        <h3 class="font-semibold text-white text-sm mb-2">Hook fires</h3>
-        <p class="text-slate-400 text-xs leading-relaxed">
-          Claude Code's <code class="text-violet text-xs bg-violet/10 px-1 rounded">UserPromptSubmit</code>
-          hook routes your prompt through TokenSaver before Claude sees it.
+    <!-- ══════════════════════════════════ TRANSFORM ══════════════════════════════ -->
+    <section class="glow-section-violet relative py-28 px-6 overflow-hidden">
+      <div class="relative z-10 max-w-5xl mx-auto">
+        <div class="text-center mb-16 reveal">
+          <p class="text-violet font-mono text-sm mb-3">
+            // the transformation
+          </p>
+          <h2 class="text-4xl md:text-5xl font-bold mb-4">
+            From vague to precise.<br />Automatically.
+          </h2>
+          <p class="text-slate-400 max-w-lg mx-auto">
+            See what Claude receives when TokenSaver is active.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+          <!-- BEFORE -->
+          <div class="reveal">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-2 h-2 rounded-full bg-slate-600"></span>
+              <span
+                class="text-xs font-mono text-slate-500 uppercase tracking-widest"
+                >Without TokenSaver</span
+              >
+            </div>
+            <div class="code-win opacity-40">
+              <div class="code-win-bar">
+                <span class="dot dot-red"></span
+                ><span class="dot dot-yellow"></span
+                ><span class="dot dot-green"></span>
+                <span class="ml-2 text-xs text-slate-600 font-mono"
+                  >Claude Code prompt</span
+                >
+              </div>
+              <div class="code-body">
+                <span class="text-slate-400"
+                  >"fix login redirect after session expiry"</span
+                >
+              </div>
+            </div>
+            <p class="text-xs text-slate-600 mt-3 font-mono leading-relaxed">
+              Claude spends tokens exploring the repo, guessing architecture,
+              re-learning conventions from scratch.
+            </p>
+          </div>
+
+          <!-- AFTER -->
+          <div
+            class="reveal d1"
+            id="after-section">
+            <div class="flex items-center gap-2 mb-3">
+              <span
+                class="w-2 h-2 rounded-full bg-cyan"
+                style="box-shadow: 0 0 5px #00d4ff"></span>
+              <span
+                class="text-xs font-mono text-cyan uppercase tracking-widest"
+                >With TokenSaver</span
+              >
+            </div>
+            <div class="code-win glow-cyan-border">
+              <div class="code-win-bar">
+                <span class="dot dot-red"></span
+                ><span class="dot dot-yellow"></span
+                ><span class="dot dot-green"></span>
+                <span class="ml-2 text-xs text-slate-500 font-mono"
+                  >additionalContext injected</span
+                >
+              </div>
+              <div class="code-body">
+                <div
+                  class="tb"
+                  id="tb0">
+                  <div class="tb-label text-cyan">Task:</div>
+                  <div class="tb-val">
+                    Fix login redirect after JWT session expiry.
+                  </div>
+                </div>
+                <div
+                  class="tb d1"
+                  id="tb1"
+                  style="margin-top: 12px">
+                  <div class="tb-label text-violet">Relevant Files:</div>
+                  <div class="tb-val">
+                    - src/auth/session.ts<br />- src/middleware/auth.ts<br />-
+                    src/routes/login.tsx
+                  </div>
+                </div>
+                <div
+                  class="tb d2"
+                  id="tb2"
+                  style="margin-top: 12px">
+                  <div
+                    class="tb-label"
+                    style="color: #34d399">
+                    Relevant Symbols:
+                  </div>
+                  <div class="tb-val">
+                    - validateSession() [session.ts:34]<br />- requireAuth()
+                    [auth.ts:12]
+                  </div>
+                </div>
+                <div
+                  class="tb d3"
+                  id="tb3"
+                  style="margin-top: 12px">
+                  <div class="tb-label text-amber">Reasoning:</div>
+                  <div class="tb-val">
+                    Session module validates JWT expiry.<br />Middleware
+                    controls redirect on failure.
+                  </div>
+                </div>
+                <div
+                  class="tb d4"
+                  id="tb4"
+                  style="margin-top: 12px">
+                  <div
+                    class="tb-label"
+                    style="color: #f87171">
+                    Constraints:
+                  </div>
+                  <div class="tb-val">
+                    - Authentication uses JWT, not cookies<br />- Do not modify
+                    database schema
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════ MEMORY ═════════════════════════════════ -->
+    <section
+      id="memory"
+      class="glow-section-emerald relative py-28 px-6 overflow-hidden">
+      <div
+        class="dot-grid opacity-35"
+        aria-hidden="true"></div>
+
+      <div class="relative z-10 max-w-5xl mx-auto">
+        <div class="text-center mb-16 reveal">
+          <p class="text-emerald font-mono text-sm mb-3">
+            // persistent memory
+          </p>
+          <h2 class="text-4xl md:text-5xl font-bold mb-4">
+            Your project never forgets.
+          </h2>
+          <p class="text-slate-400 max-w-lg mx-auto">
+            The local LLM updates these files automatically after every prompt.
+            Commit them to share context across your team.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <!-- memory.md -->
+          <div
+            class="memory-card reveal"
+            id="mc1">
+            <div class="mc-header">
+              <span style="color: #00d4ff">📄</span>
+              <span class="text-xs font-mono text-slate-300"
+                >.tokensaver/memory.md</span
+              >
+              <span
+                class="ml-auto text-xs font-mono"
+                style="color: #00d4ff"
+                >facts</span
+              >
+            </div>
+            <div
+              class="mc-body"
+              id="mb1">
+              <span class="ml t-border"
+                ><!-- id: a1 category: architecture --></span
+              >
+              <span class="ml t-white">Backend uses FastAPI + JWT</span>
+              <span class="ml t-border mt-1"
+                ><!-- id: b2 category: constraints --></span
+              >
+              <span class="ml t-white"
+                >No schema changes without migration</span
+              >
+              <span class="ml t-border mt-1"
+                ><!-- id: c3 category: conventions --></span
+              >
+              <span class="ml t-white">All routes use requireAuth()</span>
+              <span class="ml t-border mt-1"
+                ><!-- id: d4 category: decisions --></span
+              >
+              <span class="ml t-white">Frontend: Next.js 14, App Router</span>
+            </div>
+          </div>
+
+          <!-- changelog.md -->
+          <div
+            class="memory-card reveal d2"
+            id="mc2">
+            <div class="mc-header">
+              <span style="color: #a78bfa">📋</span>
+              <span class="text-xs font-mono text-slate-300"
+                >.tokensaver/changelog.md</span
+              >
+              <span
+                class="ml-auto text-xs font-mono"
+                style="color: #a78bfa"
+                >history</span
+              >
+            </div>
+            <div
+              class="mc-body"
+              id="mb2">
+              <span
+                class="ml"
+                style="color: #a78bfa"
+                >## 2026-05-12 14:22</span
+              >
+              <span class="ml t-white">Fixed JWT session expiry redirect</span>
+              <span class="ml t-muted mt-1">──────────────────</span>
+              <span
+                class="ml"
+                style="color: #a78bfa"
+                >## 2026-05-11 09:15</span
+              >
+              <span class="ml t-white">Refactored auth middleware chain</span>
+              <span class="ml t-muted mt-1">──────────────────</span>
+              <span
+                class="ml"
+                style="color: #a78bfa"
+                >## 2026-05-10 16:40</span
+              >
+              <span class="ml t-white">Added rate limiting to /api/login</span>
+            </div>
+          </div>
+
+          <!-- tasks.jsonl -->
+          <div
+            class="memory-card reveal d3"
+            id="mc3">
+            <div class="mc-header">
+              <span style="color: #34d399">📊</span>
+              <span class="text-xs font-mono text-slate-300"
+                >.tokensaver/tasks.jsonl</span
+              >
+              <span
+                class="ml-auto text-xs font-mono"
+                style="color: #34d399"
+                >tasks</span
+              >
+            </div>
+            <div
+              class="mc-body"
+              id="mb3">
+              <span class="ml t-muted">{"id":"a1","status":</span>
+              <span
+                class="ml"
+                style="color: #34d399; padding-left: 8px"
+                >"active",</span
+              >
+              <span
+                class="ml t-default"
+                style="padding-left: 8px"
+                >"description":"Fix login redirect"}</span
+              >
+              <span class="ml t-muted mt-1">{"id":"c3","status":</span>
+              <span
+                class="ml"
+                style="color: #4b5563; padding-left: 8px"
+                >"completed",</span
+              >
+              <span
+                class="ml"
+                style="color: #4b5563; padding-left: 8px"
+                >"description":"Auth middleware refactor"}</span
+              >
+              <span class="ml t-muted mt-1">{"id":"e5","status":</span>
+              <span
+                class="ml"
+                style="color: #34d399; padding-left: 8px"
+                >"active",</span
+              >
+              <span
+                class="ml t-default"
+                style="padding-left: 8px"
+                >"description":"Rate limit /api/login"}</span
+              >
+            </div>
+          </div>
+        </div>
+
+        <p class="text-center text-xs font-mono text-slate-600 mt-5 reveal">
+          Updated automatically by the local LLM · Commit to share with your
+          team
         </p>
       </div>
+    </section>
 
-      <div class="p-node reveal d2" id="pn2"><div class="p-icon bg-violet/10 text-violet mb-3">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-      </div><div class="text-xs font-mono text-violet mb-1">02 / analyze</div>
-        <h3 class="font-semibold text-white text-sm mb-2">Local LLM decides</h3>
-        <p class="text-slate-400 text-xs leading-relaxed">
-          Fast file scanner finds candidates. Qwen2.5-Coder selects the truly relevant
-          ones and structures a precise task plan.
-        </p>
-      </div>
+    <!-- ══════════════════════════════════ LOCAL LLM ══════════════════════════════ -->
+    <section
+      class="relative py-28 px-6 overflow-hidden"
+      style="background: #070c17">
+      <div
+        class="dot-grid opacity-30"
+        aria-hidden="true"></div>
 
-      <div class="p-node reveal d3" id="pn3"><div class="p-icon text-emerald mb-3" style="background:rgba(16,185,129,0.1)">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>
-      </div><div class="text-xs font-mono text-emerald mb-1">03 / inject</div>
-        <h3 class="font-semibold text-white text-sm mb-2">Claude gets context</h3>
-        <p class="text-slate-400 text-xs leading-relaxed">
-          Structured context arrives alongside your original prompt. Claude starts
-          with the right files and a clear task — no repo exploration needed.
-        </p>
-      </div>
-
-    </div>
-  </div>
-</section>
-
-
-<!-- ══════════════════════════════════ TRANSFORM ══════════════════════════════ -->
-<section class="glow-section-violet relative py-28 px-6 overflow-hidden">
-
-  <div class="relative z-10 max-w-5xl mx-auto">
-
-    <div class="text-center mb-16 reveal">
-      <p class="text-violet font-mono text-sm mb-3">// the transformation</p>
-      <h2 class="text-4xl md:text-5xl font-bold mb-4">From vague to precise.<br>Automatically.</h2>
-      <p class="text-slate-400 max-w-lg mx-auto">See what Claude receives when TokenSaver is active.</p>
-    </div>
-
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-
-      <!-- BEFORE -->
-      <div class="reveal">
-        <div class="flex items-center gap-2 mb-3">
-          <span class="w-2 h-2 rounded-full bg-slate-600"></span>
-          <span class="text-xs font-mono text-slate-500 uppercase tracking-widest">Without TokenSaver</span>
+      <div class="relative z-10 max-w-4xl mx-auto">
+        <div class="text-center mb-16 reveal">
+          <p class="text-violet font-mono text-sm mb-3">// local llm</p>
+          <h2 class="text-4xl md:text-5xl font-bold mb-4">
+            Local. Private. Fast.
+          </h2>
+          <p class="text-slate-400 max-w-lg mx-auto">
+            No data leaves your machine. No API keys. No cloud costs.
+          </p>
         </div>
-        <div class="code-win opacity-40">
-          <div class="code-win-bar">
-            <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
-            <span class="ml-2 text-xs text-slate-600 font-mono">Claude Code prompt</span>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- model card -->
+          <div class="reveal bg-card border border-border rounded-2xl p-6">
+            <div class="flex items-center justify-between mb-5">
+              <span
+                class="text-xs font-mono text-violet uppercase tracking-widest"
+                >Default Model</span
+              >
+              <div class="flex items-center gap-2">
+                <span class="s-dot"></span>
+                <span class="text-xs font-mono text-emerald">ready</span>
+              </div>
+            </div>
+            <div class="font-mono text-2xl font-semibold text-white mb-1">
+              qwen2.5-coder:0.5b
+            </div>
+            <p class="text-slate-400 text-sm mb-5">
+              Code-aware · 400 MB · Runs on any MacBook
+            </p>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-raised rounded-lg p-3 text-center">
+                <div class="text-xl font-bold text-white">0.5B</div>
+                <div class="text-xs text-slate-500">parameters</div>
+              </div>
+              <div class="bg-raised rounded-lg p-3 text-center">
+                <div class="text-xl font-bold text-white">
+                  ~400<span class="text-sm">MB</span>
+                </div>
+                <div class="text-xs text-slate-500">model size</div>
+              </div>
+              <div class="bg-raised rounded-lg p-3 text-center">
+                <div class="text-xl font-bold text-white">
+                  &lt;2<span class="text-sm">s</span>
+                </div>
+                <div class="text-xs text-slate-500">avg response</div>
+              </div>
+              <div class="bg-raised rounded-lg p-3 text-center">
+                <div class="text-xl font-bold text-white">100%</div>
+                <div class="text-xs text-slate-500">offline</div>
+              </div>
+            </div>
           </div>
-          <div class="code-body">
-            <span class="text-slate-400">"fix login redirect after session expiry"</span>
-          </div>
-        </div>
-        <p class="text-xs text-slate-600 mt-3 font-mono leading-relaxed">
-          Claude spends tokens exploring the repo, guessing architecture,
-          re-learning conventions from scratch.
-        </p>
-      </div>
 
-      <!-- AFTER -->
-      <div class="reveal d1" id="after-section">
-        <div class="flex items-center gap-2 mb-3">
-          <span class="w-2 h-2 rounded-full bg-cyan" style="box-shadow:0 0 5px #00d4ff"></span>
-          <span class="text-xs font-mono text-cyan uppercase tracking-widest">With TokenSaver</span>
-        </div>
-        <div class="code-win glow-cyan-border">
-          <div class="code-win-bar">
-            <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
-            <span class="ml-2 text-xs text-slate-500 font-mono">additionalContext injected</span>
-          </div>
-          <div class="code-body">
-            <div class="tb"     id="tb0"><div class="tb-label text-cyan">Task:</div>
-              <div class="tb-val">Fix login redirect after JWT session expiry.</div></div>
-            <div class="tb d1"  id="tb1" style="margin-top:12px"><div class="tb-label text-violet">Relevant Files:</div>
-              <div class="tb-val">- src/auth/session.ts<br>- src/middleware/auth.ts<br>- src/routes/login.tsx</div></div>
-            <div class="tb d2"  id="tb2" style="margin-top:12px"><div class="tb-label" style="color:#34d399">Relevant Symbols:</div>
-              <div class="tb-val">- validateSession() [session.ts:34]<br>- requireAuth() [auth.ts:12]</div></div>
-            <div class="tb d3"  id="tb3" style="margin-top:12px"><div class="tb-label text-amber">Reasoning:</div>
-              <div class="tb-val">Session module validates JWT expiry.<br>Middleware controls redirect on failure.</div></div>
-            <div class="tb d4"  id="tb4" style="margin-top:12px"><div class="tb-label" style="color:#f87171">Constraints:</div>
-              <div class="tb-val">- Authentication uses JWT, not cookies<br>- Do not modify database schema</div></div>
-          </div>
-        </div>
-      </div>
-
-    </div>
-  </div>
-</section>
-
-
-<!-- ══════════════════════════════════ MEMORY ═════════════════════════════════ -->
-<section id="memory" class="glow-section-emerald relative py-28 px-6 overflow-hidden">
-  <div class="dot-grid opacity-35" aria-hidden="true"></div>
-
-  <div class="relative z-10 max-w-5xl mx-auto">
-
-    <div class="text-center mb-16 reveal">
-      <p class="text-emerald font-mono text-sm mb-3">// persistent memory</p>
-      <h2 class="text-4xl md:text-5xl font-bold mb-4">Your project never forgets.</h2>
-      <p class="text-slate-400 max-w-lg mx-auto">
-        The local LLM updates these files automatically after every prompt.
-        Commit them to share context across your team.
-      </p>
-    </div>
-
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
-
-      <!-- memory.md -->
-      <div class="memory-card reveal" id="mc1">
-        <div class="mc-header">
-          <span style="color:#00d4ff">📄</span>
-          <span class="text-xs font-mono text-slate-300">.tokensaver/memory.md</span>
-          <span class="ml-auto text-xs font-mono" style="color:#00d4ff">facts</span>
-        </div>
-        <div class="mc-body" id="mb1">
-          <span class="ml t-border"><!-- id: a1 category: architecture --></span>
-          <span class="ml t-white">Backend uses FastAPI + JWT</span>
-          <span class="ml t-border mt-1"><!-- id: b2 category: constraints --></span>
-          <span class="ml t-white">No schema changes without migration</span>
-          <span class="ml t-border mt-1"><!-- id: c3 category: conventions --></span>
-          <span class="ml t-white">All routes use requireAuth()</span>
-          <span class="ml t-border mt-1"><!-- id: d4 category: decisions --></span>
-          <span class="ml t-white">Frontend: Next.js 14, App Router</span>
-        </div>
-      </div>
-
-      <!-- changelog.md -->
-      <div class="memory-card reveal d2" id="mc2">
-        <div class="mc-header">
-          <span style="color:#a78bfa">📋</span>
-          <span class="text-xs font-mono text-slate-300">.tokensaver/changelog.md</span>
-          <span class="ml-auto text-xs font-mono" style="color:#a78bfa">history</span>
-        </div>
-        <div class="mc-body" id="mb2">
-          <span class="ml" style="color:#a78bfa">## 2026-05-12 14:22</span>
-          <span class="ml t-white">Fixed JWT session expiry redirect</span>
-          <span class="ml t-muted mt-1">──────────────────</span>
-          <span class="ml" style="color:#a78bfa">## 2026-05-11 09:15</span>
-          <span class="ml t-white">Refactored auth middleware chain</span>
-          <span class="ml t-muted mt-1">──────────────────</span>
-          <span class="ml" style="color:#a78bfa">## 2026-05-10 16:40</span>
-          <span class="ml t-white">Added rate limiting to /api/login</span>
-        </div>
-      </div>
-
-      <!-- tasks.jsonl -->
-      <div class="memory-card reveal d3" id="mc3">
-        <div class="mc-header">
-          <span style="color:#34d399">📊</span>
-          <span class="text-xs font-mono text-slate-300">.tokensaver/tasks.jsonl</span>
-          <span class="ml-auto text-xs font-mono" style="color:#34d399">tasks</span>
-        </div>
-        <div class="mc-body" id="mb3">
-          <span class="ml t-muted">{"id":"a1","status":</span>
-          <span class="ml" style="color:#34d399;padding-left:8px">"active",</span>
-          <span class="ml t-default" style="padding-left:8px">"description":"Fix login redirect"}</span>
-          <span class="ml t-muted mt-1">{"id":"c3","status":</span>
-          <span class="ml" style="color:#4b5563;padding-left:8px">"completed",</span>
-          <span class="ml" style="color:#4b5563;padding-left:8px">"description":"Auth middleware refactor"}</span>
-          <span class="ml t-muted mt-1">{"id":"e5","status":</span>
-          <span class="ml" style="color:#34d399;padding-left:8px">"active",</span>
-          <span class="ml t-default" style="padding-left:8px">"description":"Rate limit /api/login"}</span>
-        </div>
-      </div>
-
-    </div>
-
-    <p class="text-center text-xs font-mono text-slate-600 mt-5 reveal">
-      Updated automatically by the local LLM · Commit to share with your team
-    </p>
-  </div>
-</section>
-
-
-<!-- ══════════════════════════════════ LOCAL LLM ══════════════════════════════ -->
-<section class="relative py-28 px-6 overflow-hidden" style="background:#070c17">
-  <div class="dot-grid opacity-30" aria-hidden="true"></div>
-
-  <div class="relative z-10 max-w-4xl mx-auto">
-
-    <div class="text-center mb-16 reveal">
-      <p class="text-violet font-mono text-sm mb-3">// local llm</p>
-      <h2 class="text-4xl md:text-5xl font-bold mb-4">Local. Private. Fast.</h2>
-      <p class="text-slate-400 max-w-lg mx-auto">
-        No data leaves your machine. No API keys. No cloud costs.
-      </p>
-    </div>
-
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-      <!-- model card -->
-      <div class="reveal bg-card border border-border rounded-2xl p-6">
-        <div class="flex items-center justify-between mb-5">
-          <span class="text-xs font-mono text-violet uppercase tracking-widest">Default Model</span>
-          <div class="flex items-center gap-2">
-            <span class="s-dot"></span>
-            <span class="text-xs font-mono text-emerald">ready</span>
-          </div>
-        </div>
-        <div class="font-mono text-2xl font-semibold text-white mb-1">qwen2.5-coder:0.5b</div>
-        <p class="text-slate-400 text-sm mb-5">Code-aware · 400 MB · Runs on any MacBook</p>
-        <div class="grid grid-cols-2 gap-3">
-          <div class="bg-raised rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-white">0.5B</div>
-            <div class="text-xs text-slate-500">parameters</div>
-          </div>
-          <div class="bg-raised rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-white">~400<span class="text-sm">MB</span></div>
-            <div class="text-xs text-slate-500">model size</div>
-          </div>
-          <div class="bg-raised rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-white">&lt;2<span class="text-sm">s</span></div>
-            <div class="text-xs text-slate-500">avg response</div>
-          </div>
-          <div class="bg-raised rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-white">100%</div>
-            <div class="text-xs text-slate-500">offline</div>
+          <!-- feature list -->
+          <div class="reveal d1 flex flex-col gap-4">
+            <div
+              class="bg-card border border-border rounded-xl p-5 flex gap-4 items-start">
+              <div
+                class="w-9 h-9 rounded-lg bg-cyan/10 flex items-center justify-center flex-shrink-0 text-cyan">
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24">
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <div>
+                <div class="font-medium text-white text-sm mb-1">
+                  Swap any Ollama model
+                </div>
+                <p class="text-slate-400 text-xs">
+                  Set <code class="text-violet">model = "llama3.2"</code> in
+                  <code class="text-slate-400">config.toml</code>. Any model
+                  installed in Ollama works.
+                </p>
+              </div>
+            </div>
+            <div
+              class="bg-card border border-border rounded-xl p-5 flex gap-4 items-start">
+              <div
+                class="w-9 h-9 rounded-lg bg-violet/10 flex items-center justify-center flex-shrink-0 text-violet">
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24">
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+              </div>
+              <div>
+                <div class="font-medium text-white text-sm mb-1">
+                  Graceful fallback
+                </div>
+                <p class="text-slate-400 text-xs">
+                  Ollama offline? TokenSaver uses keyword-based analysis
+                  automatically. Your session is never blocked.
+                </p>
+              </div>
+            </div>
+            <div
+              class="bg-card border border-border rounded-xl p-5 flex gap-4 items-start">
+              <div
+                class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+                style="background: rgba(16, 185, 129, 0.1); color: #34d399">
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24">
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+              </div>
+              <div>
+                <div class="font-medium text-white text-sm mb-1">
+                  Zero telemetry
+                </div>
+                <p class="text-slate-400 text-xs">
+                  Your code, prompts, and memory files never leave your machine.
+                  No accounts, no cloud sync.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+    </section>
 
-      <!-- feature list -->
-      <div class="reveal d1 flex flex-col gap-4">
-        <div class="bg-card border border-border rounded-xl p-5 flex gap-4 items-start">
-          <div class="w-9 h-9 rounded-lg bg-cyan/10 flex items-center justify-center flex-shrink-0 text-cyan">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-          </div>
-          <div><div class="font-medium text-white text-sm mb-1">Swap any Ollama model</div>
-            <p class="text-slate-400 text-xs">Set <code class="text-violet">model = "llama3.2"</code> in <code class="text-slate-400">config.toml</code>. Any model installed in Ollama works.</p></div>
+    <!-- ══════════════════════════════════ INSTALL ════════════════════════════════ -->
+    <section
+      id="install"
+      class="glow-section relative py-28 px-6 overflow-hidden">
+      <div
+        class="dot-grid opacity-35"
+        aria-hidden="true"></div>
+
+      <div class="relative z-10 max-w-2xl mx-auto">
+        <div class="text-center mb-14 reveal">
+          <p class="text-cyan font-mono text-sm mb-3">// install</p>
+          <h2 class="text-4xl md:text-5xl font-bold mb-4">Up in 5 minutes.</h2>
         </div>
-        <div class="bg-card border border-border rounded-xl p-5 flex gap-4 items-start">
-          <div class="w-9 h-9 rounded-lg bg-violet/10 flex items-center justify-center flex-shrink-0 text-violet">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+
+        <div class="reveal flex items-start gap-4 mb-5">
+          <div class="step-n mt-1">1</div>
+          <div class="flex-1">
+            <div class="font-medium text-white mb-2 text-sm">
+              Install Ollama and pull the model
+            </div>
+            <div class="code-win">
+              <div class="code-win-bar">
+                <span class="dot dot-red"></span
+                ><span class="dot dot-yellow"></span
+                ><span class="dot dot-green"></span>
+                <button
+                  class="copy-btn ml-auto"
+                  data-copy="brew install ollama&#10;ollama serve&#10;ollama pull qwen2.5-coder:0.5b">
+                  copy
+                </button>
+              </div>
+              <div class="code-body text-sm">
+                <span class="t-dim">$</span>
+                <span class="t-white">brew install ollama</span><br />
+                <span class="t-dim">$</span>
+                <span class="t-white">ollama serve</span><br />
+                <span class="t-dim">$</span>
+                <span class="t-white">ollama pull qwen2.5-coder:0.5b</span>
+              </div>
+            </div>
           </div>
-          <div><div class="font-medium text-white text-sm mb-1">Graceful fallback</div>
-            <p class="text-slate-400 text-xs">Ollama offline? TokenSaver uses keyword-based analysis automatically. Your session is never blocked.</p></div>
         </div>
-        <div class="bg-card border border-border rounded-xl p-5 flex gap-4 items-start">
-          <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style="background:rgba(16,185,129,0.1);color:#34d399">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+
+        <div class="reveal d1 flex items-start gap-4 mb-5">
+          <div class="step-n mt-1">2</div>
+          <div class="flex-1">
+            <div class="font-medium text-white mb-2 text-sm">
+              Build and install TokenSaver
+            </div>
+            <div class="code-win">
+              <div class="code-win-bar">
+                <span class="dot dot-red"></span
+                ><span class="dot dot-yellow"></span
+                ><span class="dot dot-green"></span>
+                <button
+                  class="copy-btn ml-auto"
+                  data-copy="git clone https://github.com/MoMicro-core/TokenSaver&#10;cd TokenSaver && cargo install --path .">
+                  copy
+                </button>
+              </div>
+              <div class="code-body text-sm">
+                <span class="t-dim">$</span>
+                <span class="t-white"
+                  >git clone https://github.com/MoMicro-core/TokenSaver</span
+                ><br />
+                <span class="t-dim">$</span>
+                <span class="t-white"
+                  >cd TokenSaver &amp;&amp; cargo install --path .</span
+                >
+              </div>
+            </div>
           </div>
-          <div><div class="font-medium text-white text-sm mb-1">Zero telemetry</div>
-            <p class="text-slate-400 text-xs">Your code, prompts, and memory files never leave your machine. No accounts, no cloud sync.</p></div>
+        </div>
+
+        <div class="reveal d2 flex items-start gap-4 mb-5">
+          <div class="step-n mt-1">3</div>
+          <div class="flex-1">
+            <div class="font-medium text-white mb-2 text-sm">
+              Initialize in your project
+            </div>
+            <div class="code-win">
+              <div class="code-win-bar">
+                <span class="dot dot-red"></span
+                ><span class="dot dot-yellow"></span
+                ><span class="dot dot-green"></span>
+                <button
+                  class="copy-btn ml-auto"
+                  data-copy="cd your-project&#10;tokensaver init">
+                  copy
+                </button>
+              </div>
+              <div class="code-body text-sm">
+                <span class="t-dim">$</span>
+                <span class="t-white">cd your-project</span><br />
+                <span class="t-dim">$</span>
+                <span class="t-white">tokensaver init</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="reveal d3 flex items-start gap-4 mb-5">
+          <div class="step-n mt-1">4</div>
+          <div class="flex-1">
+            <div class="font-medium text-white mb-2 text-sm">
+              Add memory and verify
+            </div>
+            <div class="code-win">
+              <div class="code-win-bar">
+                <span class="dot dot-red"></span
+                ><span class="dot dot-yellow"></span
+                ><span class="dot dot-green"></span>
+                <button
+                  class="copy-btn ml-auto"
+                  data-copy='tokensaver remember "Backend uses FastAPI with JWT"&#10;tokensaver llm-status&#10;tokensaver context "fix auth redirect"'>
+                  copy
+                </button>
+              </div>
+              <div class="code-body text-sm">
+                <span class="t-dim">$</span>
+                <span class="t-white"
+                  >tokensaver remember
+                  <span class="t-cyan"
+                    >"Backend uses FastAPI with JWT"</span
+                  ></span
+                ><br />
+                <span class="t-dim">$</span>
+                <span class="t-white">tokensaver llm-status</span><br />
+                <span class="t-dim">$</span>
+                <span class="t-white"
+                  >tokensaver context
+                  <span class="t-cyan">"fix auth redirect"</span></span
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="reveal d4 text-center mt-8">
+          <p class="text-slate-500 text-sm font-mono">
+            Open Claude Code. Type a prompt. TokenSaver runs automatically.
+          </p>
         </div>
       </div>
+    </section>
 
-    </div>
-  </div>
-</section>
-
-
-<!-- ══════════════════════════════════ INSTALL ════════════════════════════════ -->
-<section id="install" class="glow-section relative py-28 px-6 overflow-hidden">
-  <div class="dot-grid opacity-35" aria-hidden="true"></div>
-
-  <div class="relative z-10 max-w-2xl mx-auto">
-
-    <div class="text-center mb-14 reveal">
-      <p class="text-cyan font-mono text-sm mb-3">// install</p>
-      <h2 class="text-4xl md:text-5xl font-bold mb-4">Up in 5 minutes.</h2>
-    </div>
-
-    <div class="reveal flex items-start gap-4 mb-5">
-      <div class="step-n mt-1">1</div>
-      <div class="flex-1">
-        <div class="font-medium text-white mb-2 text-sm">Install Ollama and pull the model</div>
-        <div class="code-win">
-          <div class="code-win-bar"><span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
-            <button class="copy-btn ml-auto" data-copy="brew install ollama&#10;ollama serve&#10;ollama pull qwen2.5-coder:0.5b">copy</button></div>
-          <div class="code-body text-sm">
-            <span class="t-dim">$</span> <span class="t-white">brew install ollama</span><br>
-            <span class="t-dim">$</span> <span class="t-white">ollama serve</span><br>
-            <span class="t-dim">$</span> <span class="t-white">ollama pull qwen2.5-coder:0.5b</span>
-          </div>
+    <!-- ══════════════════════════════════ FOOTER ════════════════════════════════ -->
+    <footer
+      class="border-t border-border py-10 px-6"
+      style="background: #070c17">
+      <div
+        class="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-5">
+        <div class="flex items-center gap-3">
+          <img
+            src="https://momicro.com/preview/logo.webp"
+            alt="MoMicro"
+            width="24"
+            height="24"
+            class="rounded"
+            loading="lazy" />
+          <span class="text-white font-semibold text-sm">TokenSaver</span>
+          <span class="text-slate-600 text-xs font-mono">by MoMicro</span>
         </div>
-      </div>
-    </div>
 
-    <div class="reveal d1 flex items-start gap-4 mb-5">
-      <div class="step-n mt-1">2</div>
-      <div class="flex-1">
-        <div class="font-medium text-white mb-2 text-sm">Build and install TokenSaver</div>
-        <div class="code-win">
-          <div class="code-win-bar"><span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
-            <button class="copy-btn ml-auto" data-copy="git clone https://github.com/MoMicro-core/TokenSaver&#10;cd TokenSaver && cargo install --path .">copy</button></div>
-          <div class="code-body text-sm">
-            <span class="t-dim">$</span> <span class="t-white">git clone https://github.com/MoMicro-core/TokenSaver</span><br>
-            <span class="t-dim">$</span> <span class="t-white">cd TokenSaver &amp;&amp; cargo install --path .</span>
-          </div>
+        <div class="flex items-center gap-6 text-sm text-slate-500">
+          <a
+            href="https://github.com/MoMicro-core/TokenSaver"
+            class="hover:text-white transition-colors"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <span>MIT License</span>
+          <span>Built with Claude Code</span>
         </div>
+
+        <div class="text-xs text-slate-600 font-mono">v0.1.0</div>
       </div>
-    </div>
+    </footer>
 
-    <div class="reveal d2 flex items-start gap-4 mb-5">
-      <div class="step-n mt-1">3</div>
-      <div class="flex-1">
-        <div class="font-medium text-white mb-2 text-sm">Initialize in your project</div>
-        <div class="code-win">
-          <div class="code-win-bar"><span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
-            <button class="copy-btn ml-auto" data-copy="cd your-project&#10;tokensaver init">copy</button></div>
-          <div class="code-body text-sm">
-            <span class="t-dim">$</span> <span class="t-white">cd your-project</span><br>
-            <span class="t-dim">$</span> <span class="t-white">tokensaver init</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- ══════════════════════════════════ SCRIPTS ════════════════════════════════ -->
+    <script>
+      // ── Perf: skip heavy animations on low-end / mobile devices ─────────────────
+      const reducedMotion = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const isCoarse = window.matchMedia('(pointer: coarse)').matches;
+      const lite = reducedMotion || isCoarse;
 
-    <div class="reveal d3 flex items-start gap-4 mb-5">
-      <div class="step-n mt-1">4</div>
-      <div class="flex-1">
-        <div class="font-medium text-white mb-2 text-sm">Add memory and verify</div>
-        <div class="code-win">
-          <div class="code-win-bar"><span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
-            <button class="copy-btn ml-auto" data-copy='tokensaver remember "Backend uses FastAPI with JWT"&#10;tokensaver llm-status&#10;tokensaver context "fix auth redirect"'>copy</button></div>
-          <div class="code-body text-sm">
-            <span class="t-dim">$</span> <span class="t-white">tokensaver remember <span class="t-cyan">"Backend uses FastAPI with JWT"</span></span><br>
-            <span class="t-dim">$</span> <span class="t-white">tokensaver llm-status</span><br>
-            <span class="t-dim">$</span> <span class="t-white">tokensaver context <span class="t-cyan">"fix auth redirect"</span></span>
-          </div>
-        </div>
-      </div>
-    </div>
+      // ── Nav scroll ───────────────────────────────────────────────────────────────
+      const nav = document.getElementById('nav');
+      let lastScroll = 0;
+      window.addEventListener(
+        'scroll',
+        () => {
+          const y = window.scrollY;
+          nav.classList.toggle('scrolled', y > 50);
+          lastScroll = y;
+        },
+        { passive: true },
+      );
 
-    <div class="reveal d4 text-center mt-8">
-      <p class="text-slate-500 text-sm font-mono">Open Claude Code. Type a prompt. TokenSaver runs automatically.</p>
-    </div>
+      // ── IntersectionObserver — single instance for ALL reveal elements ───────────
+      // Using one observer is cheaper than one per element.
+      const revealObs = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((e) => {
+            if (e.isIntersecting) {
+              e.target.classList.add('visible');
+              revealObs.unobserve(e.target); // fire once
+            }
+          });
+        },
+        { threshold: 0.12, rootMargin: '0px 0px -40px 0px' },
+      );
 
-  </div>
-</section>
+      document
+        .querySelectorAll('.reveal')
+        .forEach((el) => revealObs.observe(el));
 
+      // ── Transform blocks — observe after-section ────────────────────────────────
+      const tbObs = new IntersectionObserver(
+        (entries) => {
+          if (!entries[0].isIntersecting) return;
+          document
+            .querySelectorAll('.tb')
+            .forEach((el) => el.classList.add('visible'));
+          tbObs.disconnect();
+        },
+        { threshold: 0.25 },
+      );
+      tbObs.observe(document.getElementById('after-section'));
 
-<!-- ══════════════════════════════════ FOOTER ════════════════════════════════ -->
-<footer class="border-t border-border py-10 px-6" style="background:#070c17">
-  <div class="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-5">
+      // ── Memory card lines — stagger via CSS transition-delay ────────────────────
+      function animateMemoryCard(cardId, bodyId) {
+        const card = document.getElementById(cardId);
+        const lines = document.getElementById(bodyId).querySelectorAll('.ml');
 
-    <div class="flex items-center gap-3">
-      <img src="https://momicro.com/preview/logo.webp" alt="MoMicro" width="24" height="24" class="rounded" loading="lazy" />
-      <span class="text-white font-semibold text-sm">TokenSaver</span>
-      <span class="text-slate-600 text-xs font-mono">by MoMicro</span>
-    </div>
+        const obs = new IntersectionObserver(
+          (entries) => {
+            if (!entries[0].isIntersecting) return;
+            obs.disconnect();
+            lines.forEach((l, i) => {
+              l.style.transitionDelay = `${i * 55}ms`;
+              l.classList.add('in');
+            });
+          },
+          { threshold: 0.3 },
+        );
+        obs.observe(card);
+      }
+      animateMemoryCard('mc1', 'mb1');
+      animateMemoryCard('mc2', 'mb2');
+      animateMemoryCard('mc3', 'mb3');
 
-    <div class="flex items-center gap-6 text-sm text-slate-500">
-      <a href="https://github.com/MoMicro-core/TokenSaver"
-         class="hover:text-white transition-colors"
-         target="_blank" rel="noopener">GitHub</a>
-      <span>MIT License</span>
-      <span>Built with Claude Code</span>
-    </div>
+      // ── Pipeline SVG line draw (GSAP, only used here) ────────────────────────────
+      if (!lite) {
+        gsap.registerPlugin(ScrollTrigger);
+        gsap.to('#pipe-line', {
+          strokeDashoffset: 0,
+          duration: 1.2,
+          ease: 'power2.inOut',
+          scrollTrigger: {
+            trigger: '#how-it-works',
+            start: 'top 65%',
+            once: true,
+          },
+        });
+      }
 
-    <div class="text-xs text-slate-600 font-mono">v0.1.0</div>
-  </div>
-</footer>
+      // ── Hero terminal — RAF-based typewriter, batches chars per frame ────────────
+      const LINES = [
+        { text: '$ tokensaver process', cls: 't-dim', ms: 500 },
+        { text: '', cls: '', ms: 150 },
+        { text: '  ⚡ Hook intercepted prompt', cls: 't-cyan', ms: 260 },
+        { text: '  🔍 Scanning repository...', cls: 't-default', ms: 320 },
+        { text: '  📚 Loading project memory', cls: 't-default', ms: 280 },
+        { text: '  🤖 Calling qwen2.5-coder:0.5b', cls: 't-violet', ms: 550 },
+        { text: '', cls: '', ms: 160 },
+        {
+          text: '  ───────────────────────────────────────',
+          cls: 't-border',
+          ms: 60,
+        },
+        { text: '  Task:', cls: 't-cyan t-bold', ms: 60 },
+        {
+          text: '  Fix login redirect after JWT session expiry.',
+          cls: 't-white',
+          ms: 60,
+        },
+        { text: '', cls: '', ms: 50 },
+        { text: '  Relevant Files:', cls: 't-violet t-bold', ms: 60 },
+        { text: '  - src/auth/session.ts', cls: 't-white', ms: 50 },
+        { text: '  - src/middleware/auth.ts', cls: 't-white', ms: 50 },
+        { text: '  - src/routes/login.tsx', cls: 't-white', ms: 50 },
+        { text: '', cls: '', ms: 50 },
+        { text: '  Reasoning:', cls: 't-green t-bold', ms: 60 },
+        {
+          text: '  Session module validates JWT expiry state.',
+          cls: 't-default',
+          ms: 50,
+        },
+        {
+          text: '  Middleware controls redirect on auth failure.',
+          cls: 't-default',
+          ms: 50,
+        },
+        {
+          text: '  ───────────────────────────────────────',
+          cls: 't-border',
+          ms: 60,
+        },
+      ];
 
+      const termContainer = document.getElementById('terminal-lines');
+      const termCursor = document.getElementById('t-cursor');
 
-<!-- ══════════════════════════════════ SCRIPTS ════════════════════════════════ -->
-<script>
-// ── Perf: skip heavy animations on low-end / mobile devices ─────────────────
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-const isCoarse      = window.matchMedia('(pointer: coarse)').matches;
-const lite          = reducedMotion || isCoarse;
+      // RAF-based: types CHARS_PER_FRAME chars per animation frame (≈ 60fps)
+      // = ~240 chars/sec — fast enough to be engaging, never blocks the thread.
+      const CHARS_PER_FRAME = 4;
 
-// ── Nav scroll ───────────────────────────────────────────────────────────────
-const nav = document.getElementById('nav');
-let lastScroll = 0;
-window.addEventListener('scroll', () => {
-  const y = window.scrollY;
-  nav.classList.toggle('scrolled', y > 50);
-  lastScroll = y;
-}, { passive: true });
+      function typeLineRAF(text, cls) {
+        return new Promise((resolve) => {
+          const el = document.createElement('span');
+          el.className = `tl ${cls}`;
+          termContainer.appendChild(el);
+          if (!text) {
+            resolve();
+            return;
+          }
 
-// ── IntersectionObserver — single instance for ALL reveal elements ───────────
-// Using one observer is cheaper than one per element.
-const revealObs = new IntersectionObserver((entries) => {
-  entries.forEach(e => {
-    if (e.isIntersecting) {
-      e.target.classList.add('visible');
-      revealObs.unobserve(e.target); // fire once
-    }
-  });
-}, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+          let i = 0;
+          function tick() {
+            i = Math.min(i + CHARS_PER_FRAME, text.length);
+            el.textContent = text.slice(0, i);
+            if (i < text.length) requestAnimationFrame(tick);
+            else resolve();
+          }
+          requestAnimationFrame(tick);
+        });
+      }
 
-document.querySelectorAll('.reveal').forEach(el => revealObs.observe(el));
+      async function runTerminal() {
+        if (lite) {
+          // Show all lines instantly for reduced motion / mobile
+          LINES.forEach((l) => {
+            const el = document.createElement('span');
+            el.className = `tl ${l.cls}`;
+            el.textContent = l.text;
+            termContainer.appendChild(el);
+          });
+          termCursor.style.display = 'none';
+          return;
+        }
 
-// ── Transform blocks — observe after-section ────────────────────────────────
-const tbObs = new IntersectionObserver((entries) => {
-  if (!entries[0].isIntersecting) return;
-  document.querySelectorAll('.tb').forEach(el => el.classList.add('visible'));
-  tbObs.disconnect();
-}, { threshold: 0.25 });
-tbObs.observe(document.getElementById('after-section'));
+        for (const line of LINES) {
+          await new Promise((r) => setTimeout(r, line.ms));
+          await typeLineRAF(line.text, line.cls);
+        }
+        termCursor.style.display = 'none';
+      }
 
-// ── Memory card lines — stagger via CSS transition-delay ────────────────────
-function animateMemoryCard(cardId, bodyId) {
-  const card  = document.getElementById(cardId);
-  const lines = document.getElementById(bodyId).querySelectorAll('.ml');
+      // Start terminal when it scrolls into view
+      const termObs = new IntersectionObserver(
+        (entries) => {
+          if (!entries[0].isIntersecting) return;
+          termObs.disconnect();
+          runTerminal();
+        },
+        { threshold: 0.2 },
+      );
+      termObs.observe(document.getElementById('hero-terminal'));
 
-  const obs = new IntersectionObserver((entries) => {
-    if (!entries[0].isIntersecting) return;
-    obs.disconnect();
-    lines.forEach((l, i) => {
-      l.style.transitionDelay = `${i * 55}ms`;
-      l.classList.add('in');
-    });
-  }, { threshold: 0.3 });
-  obs.observe(card);
-}
-animateMemoryCard('mc1', 'mb1');
-animateMemoryCard('mc2', 'mb2');
-animateMemoryCard('mc3', 'mb3');
-
-// ── Pipeline SVG line draw (GSAP, only used here) ────────────────────────────
-if (!lite) {
-  gsap.registerPlugin(ScrollTrigger);
-  gsap.to('#pipe-line', {
-    strokeDashoffset: 0,
-    duration: 1.2,
-    ease: 'power2.inOut',
-    scrollTrigger: {
-      trigger: '#how-it-works',
-      start: 'top 65%',
-      once: true,
-    }
-  });
-}
-
-// ── Hero terminal — RAF-based typewriter, batches chars per frame ────────────
-const LINES = [
-  { text: '$ tokensaver process',                             cls: 't-dim',        ms: 500 },
-  { text: '',                                                  cls: '',             ms: 150 },
-  { text: '  ⚡ Hook intercepted prompt',                      cls: 't-cyan',       ms: 260 },
-  { text: '  🔍 Scanning repository...',                       cls: 't-default',    ms: 320 },
-  { text: '  📚 Loading project memory',                       cls: 't-default',    ms: 280 },
-  { text: '  🤖 Calling qwen2.5-coder:0.5b',                  cls: 't-violet',     ms: 550 },
-  { text: '',                                                  cls: '',             ms: 160 },
-  { text: '  ───────────────────────────────────────',        cls: 't-border',     ms: 60  },
-  { text: '  Task:',                                          cls: 't-cyan t-bold',ms: 60  },
-  { text: '  Fix login redirect after JWT session expiry.',   cls: 't-white',      ms: 60  },
-  { text: '',                                                  cls: '',             ms: 50  },
-  { text: '  Relevant Files:',                                cls: 't-violet t-bold',ms: 60},
-  { text: '  - src/auth/session.ts',                         cls: 't-white',      ms: 50  },
-  { text: '  - src/middleware/auth.ts',                       cls: 't-white',      ms: 50  },
-  { text: '  - src/routes/login.tsx',                         cls: 't-white',      ms: 50  },
-  { text: '',                                                  cls: '',             ms: 50  },
-  { text: '  Reasoning:',                                     cls: 't-green t-bold',ms: 60 },
-  { text: '  Session module validates JWT expiry state.',     cls: 't-default',    ms: 50  },
-  { text: '  Middleware controls redirect on auth failure.',  cls: 't-default',    ms: 50  },
-  { text: '  ───────────────────────────────────────',        cls: 't-border',     ms: 60  },
-];
-
-const termContainer = document.getElementById('terminal-lines');
-const termCursor    = document.getElementById('t-cursor');
-
-// RAF-based: types CHARS_PER_FRAME chars per animation frame (≈ 60fps)
-// = ~240 chars/sec — fast enough to be engaging, never blocks the thread.
-const CHARS_PER_FRAME = 4;
-
-function typeLineRAF(text, cls) {
-  return new Promise(resolve => {
-    const el = document.createElement('span');
-    el.className = `tl ${cls}`;
-    termContainer.appendChild(el);
-    if (!text) { resolve(); return; }
-
-    let i = 0;
-    function tick() {
-      i = Math.min(i + CHARS_PER_FRAME, text.length);
-      el.textContent = text.slice(0, i);
-      if (i < text.length) requestAnimationFrame(tick);
-      else resolve();
-    }
-    requestAnimationFrame(tick);
-  });
-}
-
-async function runTerminal() {
-  if (lite) {
-    // Show all lines instantly for reduced motion / mobile
-    LINES.forEach(l => {
-      const el = document.createElement('span');
-      el.className = `tl ${l.cls}`;
-      el.textContent = l.text;
-      termContainer.appendChild(el);
-    });
-    termCursor.style.display = 'none';
-    return;
-  }
-
-  for (const line of LINES) {
-    await new Promise(r => setTimeout(r, line.ms));
-    await typeLineRAF(line.text, line.cls);
-  }
-  termCursor.style.display = 'none';
-}
-
-// Start terminal when it scrolls into view
-const termObs = new IntersectionObserver(entries => {
-  if (!entries[0].isIntersecting) return;
-  termObs.disconnect();
-  runTerminal();
-}, { threshold: 0.2 });
-termObs.observe(document.getElementById('hero-terminal'));
-
-// ── Copy buttons ──────────────────────────────────────────────────────────────
-document.querySelectorAll('.copy-btn').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(btn.dataset.copy);
-      const orig = btn.textContent;
-      btn.textContent = 'copied ✓';
-      btn.style.color = '#34d399';
-      btn.style.borderColor = 'rgba(52,211,153,0.3)';
-      setTimeout(() => {
-        btn.textContent = orig;
-        btn.style.color = '';
-        btn.style.borderColor = '';
-      }, 2000);
-    } catch { btn.textContent = 'error'; }
-  });
-});
-</script>
-
-</body>
+      // ── Copy buttons ──────────────────────────────────────────────────────────────
+      document.querySelectorAll('.copy-btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(btn.dataset.copy);
+            const orig = btn.textContent;
+            btn.textContent = 'copied ✓';
+            btn.style.color = '#34d399';
+            btn.style.borderColor = 'rgba(52,211,153,0.3)';
+            setTimeout(() => {
+              btn.textContent = orig;
+              btn.style.color = '';
+              btn.style.borderColor = '';
+            }, 2000);
+          } catch {
+            btn.textContent = 'error';
+          }
+        });
+      });
+    </script>
+  </body>
 </html>
