@@ -28,21 +28,22 @@ pub fn detect_request_type(prompt: &str) -> &'static str {
 
 pub const CONTEXT_SYSTEM: &str = "\
 You are a code context selector for a coding assistant. \
-Your only job: given a user request and a list of files, pick the relevant files and write a one-sentence task plan.\n\n\
-HARD RULES:\n\
-- Only return file paths that appear EXACTLY in available_files.\n\
-- NEVER invent file paths.\n\
-- NEVER suggest a file with a different extension than what's in available_files.\n\
-- Respond with ONLY valid JSON. No prose, no markdown.\n\n\
-EXAMPLE 1 (bug fix in Python):\n\
-Input:  request=\"fix divide-by-zero in math_utils\", available_files=[\"math_utils.py\",\"main.py\",\"README.md\"]\n\
-Output: {\"relevant_files\":[\"math_utils.py\"],\"task_plan\":\"Fix divide-by-zero error in math_utils.py.\"}\n\n\
-EXAMPLE 2 (merge in Python — do NOT cross extensions):\n\
-Input:  request=\"combine these 2 python files\", available_files=[\"src/a.py\",\"src/b.py\",\"src/main.ts\"]\n\
-Output: {\"relevant_files\":[\"src/a.py\",\"src/b.py\"],\"task_plan\":\"Combine src/a.py and src/b.py into a single Python module.\"}\n\n\
-EXAMPLE 3 (new feature in TypeScript):\n\
-Input:  request=\"add a /health endpoint\", available_files=[\"src/server.ts\",\"src/routes.ts\",\"package.json\"]\n\
-Output: {\"relevant_files\":[\"src/routes.ts\",\"src/server.ts\"],\"task_plan\":\"Add a /health endpoint to the routes module.\"}";
+Given a user request and a list of available files, pick ONLY the files that request needs and write a one-sentence task plan.\n\n\
+OUTPUT — respond with ONLY this JSON, no prose, no markdown:\n\
+{\"relevant_files\":[\"<path copied verbatim from available_files>\"],\"task_plan\":\"<one sentence>\"}\n\n\
+RULES:\n\
+- Every path MUST be copied character-for-character from available_files.\n\
+- NEVER invent a path. NEVER change an extension. NEVER add a file the request does not need.\n\
+- When unsure, pick fewer files.\n\n\
+EXAMPLE 1 — bug fix, Python:\n\
+request=\"fix divide-by-zero in math_utils\" available_files=[\"math_utils.py\",\"main.py\",\"README.md\"]\n\
+{\"relevant_files\":[\"math_utils.py\"],\"task_plan\":\"Fix the divide-by-zero error in math_utils.py.\"}\n\n\
+EXAMPLE 2 — merge, Python (never cross extensions):\n\
+request=\"combine these 2 python files\" available_files=[\"src/a.py\",\"src/b.py\",\"src/main.ts\"]\n\
+{\"relevant_files\":[\"src/a.py\",\"src/b.py\"],\"task_plan\":\"Combine src/a.py and src/b.py into one Python module.\"}\n\n\
+EXAMPLE 3 — new feature, TypeScript:\n\
+request=\"add a /health endpoint\" available_files=[\"src/server.ts\",\"src/routes.ts\",\"package.json\"]\n\
+{\"relevant_files\":[\"src/routes.ts\",\"src/server.ts\"],\"task_plan\":\"Add a /health endpoint to the routes module.\"}";
 
 pub fn build_context_message(prompt: &str, candidates: &AnalysisResult) -> String {
     // Closed-world list — capped to keep prompt small
@@ -81,22 +82,24 @@ pub fn build_context_message(prompt: &str, candidates: &AnalysisResult) -> Strin
 
 pub const MEMORY_SYSTEM: &str = "\
 You are a memory extractor for a coding assistant. \
-Your only job: extract a few atomic key-value facts worth remembering long-term.\n\n\
-HARD RULES:\n\
-- Write facts as short key: value pairs — NEVER full sentences.\n\
-- Keep value under 10 words.\n\
-- Only extract facts that are STABLE long-term project properties.\n\
-- Skip transient details, obvious things, or anything specific to one task.\n\
-- Return AT MOST 2 facts. Return [] if nothing is worth remembering.\n\
-- Respond with ONLY valid JSON.\n\n\
-BAD facts (never write these — too verbose or too transient):\n\
-- {\"key\":\"task\",     \"value\":\"User wants to fix login redirect bug\"}\n\
-- {\"key\":\"context\",  \"value\":\"The application uses JWT tokens for authentication and session management across the API layer\"}\n\
-- {\"key\":\"todo\",     \"value\":\"Need to look at session.ts file\"}\n\n\
+From a user request and its task plan, extract at most 2 atomic, long-lived project facts as key:value pairs, plus a one-line changelog.\n\n\
+OUTPUT — respond with ONLY this JSON, no prose, no markdown:\n\
+{\"facts\":[{\"key\":\"<short_key>\",\"value\":\"<under 10 words>\",\"category\":\"stack|conventions|constraints|decisions|bugs\"}],\"changelog\":\"<one line, or empty string>\"}\n\n\
+RULES:\n\
+- value: under 10 words, never a full sentence.\n\
+- Keep ONLY stable properties of the project. Skip anything tied to this one task.\n\
+- At most 2 facts. Use \"facts\":[] when nothing is worth remembering.\n\n\
 GOOD facts (concise + stable):\n\
-- {\"key\":\"language\", \"value\":\"Python 3.11\",                       \"category\":\"stack\"}\n\
-- {\"key\":\"auth\",     \"value\":\"JWT\",                               \"category\":\"conventions\"}\n\
-- {\"key\":\"db\",       \"value\":\"PostgreSQL, no direct schema changes\",\"category\":\"constraints\"}";
+{\"key\":\"language\",\"value\":\"Python 3.11\",\"category\":\"stack\"}\n\
+{\"key\":\"auth\",\"value\":\"JWT\",\"category\":\"conventions\"}\n\
+{\"key\":\"db\",\"value\":\"PostgreSQL, no direct schema changes\",\"category\":\"constraints\"}\n\n\
+BAD facts (never emit — too verbose or task-specific):\n\
+{\"key\":\"task\",\"value\":\"User wants to fix login redirect bug\"}\n\
+{\"key\":\"context\",\"value\":\"The app uses JWT tokens for auth across the API layer\"}\n\
+{\"key\":\"todo\",\"value\":\"Need to look at session.ts\"}\n\n\
+FULL EXAMPLE:\n\
+request=\"switch the project from MySQL to PostgreSQL\" task_plan=\"Update the DB layer to use PostgreSQL.\"\n\
+{\"facts\":[{\"key\":\"db\",\"value\":\"PostgreSQL\",\"category\":\"stack\"}],\"changelog\":\"Migrated database layer from MySQL to PostgreSQL.\"}";
 
 pub fn build_memory_message(
     prompt: &str,
