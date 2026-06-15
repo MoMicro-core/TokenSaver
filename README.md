@@ -1,8 +1,22 @@
 # TokenSaver
 
-A Claude Code hook powered by a local LLM. Every prompt you send is automatically enriched with relevant files, a structured task plan, and persistent project memory — before Claude ever sees it.
+A Claude Code hook powered by a local LLM. Every prompt you send is automatically enriched with the relevant files, a structured task plan, and persistent project memory — before Claude ever sees it.
 
 You keep using Claude Code exactly as before. TokenSaver runs invisibly in the background.
+
+---
+
+## Why It Saves Tokens
+
+Most of a Claude Code session's token cost isn't your prompt — it's **Claude exploring your repo to find the relevant code.** When you ask it to *"fix the login redirect,"* Claude doesn't know where that lives, so it lists directories, greps for keywords, and reads whole files (often 5–10 of them) just to locate the right spot. Every one of those tool results stays in the context window and is re-processed on every following turn. That discovery phase routinely costs tens of thousands of tokens before a single line is edited.
+
+TokenSaver removes that phase by doing the discovery **locally, for free:**
+
+- A fast Rust scanner ranks candidate files, and a small **local** model (`qwen2.5-coder:0.5b` via Ollama) decides which ones actually matter — none of that touches Claude's token budget.
+- The result is injected as a compact, budget-capped context block (`max_tokens`, default 8000) that hands Claude the answer instead of the search.
+- Claude jumps straight to reading the 1–3 right files and spends its tokens **editing** instead of **searching.**
+
+The win grows with repo size. It helps least on trivial prompts where Claude wouldn't have explored anyway.
 
 ---
 
@@ -46,10 +60,6 @@ You type: "fix login redirect after session expiry"
           - validateSession() [session.ts:34]
           - requireAuth() [auth.ts:12]
 
-          Reasoning:
-          The session module validates JWT expiry state.
-          The middleware controls redirect behavior on auth failure.
-
           Constraints (from project memory):
           - Authentication uses JWT, not cookies
           - Do not modify database schema automatically
@@ -57,6 +67,7 @@ You type: "fix login redirect after session expiry"
           Instructions:
           Work only with the listed files first.
           Explain before editing any file not listed above.
+          Avoid unrelated refactors.
 ```
 
 Your prompt reaches Claude unchanged. The context rides next to it, invisibly.
@@ -148,40 +159,47 @@ tokensaver tasks --all        # show all tasks including completed
 
 ## Configuration
 
-`.tokensaver/config.toml` — all values are optional:
+`.tokensaver/config.toml` — every value is optional and falls back to the default shown. Run `tokensaver config` to print the effective configuration.
 
 ```toml
 [llm]
-enabled = true
-model = "qwen2.5-coder:0.5b"   # any model installed in Ollama
+enabled  = true
+provider = "ollama"                # "ollama" for local | "openai" for any OpenAI-compatible API
+model    = "qwen2.5-coder:0.5b"    # model name as the provider knows it
 endpoint = "http://localhost:11434"
-timeout_secs = 30               # fallback to deterministic mode after this
+# api_key = ""                     # cloud only — or set TOKENSAVER_API_KEY / OPENAI_API_KEY env var
+timeout_secs = 30                  # fall back to deterministic mode after this
 
 [prompt]
-max_tokens = 8000
-include_snippets = true
-snippet_lines = 20
+max_tokens       = 8000  # token budget for the injected context
+include_snippets = true  # include short code excerpts alongside file paths
+snippet_lines    = 20    # max lines per file snippet
 
 [analyzer]
-max_files = 20
+max_files   = 20
 max_symbols = 50
-languages = ["typescript", "javascript", "python", "rust", "go"]
-exclude = ["node_modules", "dist", "build", ".git", "target"]
+languages   = ["typescript", "javascript", "python", "rust", "go"]
+exclude     = ["node_modules", "dist", "build", ".git", "target"]
 
 [memory]
 auto_inject = true
-max_facts = 100
+max_facts   = 100
 ```
 
-**Switching models:** install any model with `ollama pull <model>` then set it in `config.toml`. Good alternatives: `phi3.5`, `llama3.2`, `qwen2.5-coder:1.5b`.
+**Switching local models:** install any model with `ollama pull <model>` then set it in `config.toml`. Good alternatives: `qwen2.5-coder:1.5b`, `llama3.2`, `phi3.5`.
+
+**Using a cloud / OpenAI-compatible API instead of Ollama:** set `provider = "openai"`, point `endpoint` at the API (e.g. `https://api.openai.com` or `https://openrouter.ai/api`), pick a `model` (e.g. `gpt-4o-mini`), and provide a key via `TOKENSAVER_API_KEY` / `OPENAI_API_KEY` (preferred) or the `api_key` field. This trades the zero-cost local model for a remote one — useful if you want sharper file selection than a 0.5b can give.
 
 ---
 
 ## Debugging
 
 ```bash
-# Check Ollama and model status
+# Check Ollama (or cloud provider) and model status
 tokensaver llm-status
+
+# Print the effective configuration (defaults + your config.toml)
+tokensaver config
 
 # See which files the fast scanner would pick
 tokensaver analyze "fix login redirect"
@@ -240,6 +258,7 @@ If Ollama is not running or the model times out, TokenSaver automatically falls 
 - [x] Claude Code hook integration (`UserPromptSubmit` → `additionalContext`)
 - [x] Persistent project memory (`memory.md`)
 - [x] Local LLM via Ollama (Qwen2.5-Coder-0.5B default)
+- [x] OpenAI-compatible cloud providers (OpenAI, OpenRouter, …)
 - [x] LLM-structured task plan injected into every prompt
 - [x] Automatic memory updates (remember / forget) after each prompt
 - [x] Changelog and task tracking (`changelog.md`, `tasks.jsonl`)
